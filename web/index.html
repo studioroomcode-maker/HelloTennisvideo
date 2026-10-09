@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hello Tennis</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
+  <link rel="stylesheet" href="/styles.css?v=0.6.0" />
+</head>
+<body>
+  <a class="skip" href="#panel">본문으로 건너뛰기</a>
+
+  <header class="topbar">
+    <div class="brand" aria-label="Hello Tennis">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5"/><path d="M4.5 6.5c3.2 2.6 3.2 8.4 0 11M19.5 6.5c-3.2 2.6-3.2 8.4 0 11"/></svg>
+      <span>Hello Tennis</span>
+    </div>
+
+    <label class="file-pick">
+      <span class="sr">분석할 영상</span>
+      <select id="fileSelect" aria-label="분석할 영상"></select>
+    </label>
+    <button id="btnSelect" class="btn ghost">영상 추가</button>
+
+    <div class="status" role="status" aria-live="polite">
+      <div id="status" class="status-text">준비됨</div>
+      <div id="statusProgressWrap" class="status-progress hidden" aria-hidden="true">
+        <div class="status-track"><div id="statusProgressFill" class="status-fill"></div></div>
+        <span id="statusProgressText" class="status-pct">0%</span>
+      </div>
+    </div>
+
+    <details class="menu">
+      <summary class="btn ghost" aria-label="프로젝트 메뉴">프로젝트</summary>
+      <div class="menu-pop">
+        <button id="btnLoad" class="menu-item">다른 프로젝트 열기…</button>
+        <button id="btnSave" class="menu-item">다른 이름으로 저장…</button>
+        <p class="menu-note">작업은 <code>projects/current_project.json</code>에 자동 저장돼요.</p>
+      </div>
+    </details>
+  </header>
+
+  <main class="workspace">
+    <!-- ── 영상 ───────────────────────────────────── -->
+    <section class="stage" aria-label="영상">
+      <div id="videoWrap" class="video-wrap">
+        <video id="video" controls preload="metadata"></video>
+        <canvas id="overlay"></canvas>
+        <div id="videoEmpty" class="video-empty hidden">
+          <p id="videoEmptyText">영상을 추가하면 여기서 재생돼요.</p>
+        </div>
+      </div>
+
+      <div id="calibHelp" class="callout hidden">
+        <p>영상 위 코트 모서리를 순서대로 클릭하세요:
+          <b>① 가까운 왼쪽</b> → <b>② 가까운 오른쪽</b> → <b>③ 먼 오른쪽</b> → <b>④ 먼 왼쪽</b></p>
+        <button id="btnCancelCalib" class="btn ghost sm">취소</button>
+      </div>
+
+      <div class="transport">
+        <div class="clock"><b id="currentTime">00:00.000</b><span>/</span><span id="duration">00:00.000</span></div>
+        <div class="rate" role="group" aria-label="재생 속도">
+          <button class="chip" data-rate="0.25">0.25×</button>
+          <button class="chip" data-rate="0.5">0.5×</button>
+          <button class="chip on" data-rate="1">1×</button>
+        </div>
+        <div class="marks">
+          <button id="btnStart" class="btn sm" title="단축키 S"><kbd>S</kbd> 포인트 시작</button>
+          <button id="btnEnd" class="btn sm" title="단축키 E"><kbd>E</kbd> 포인트 끝</button>
+        </div>
+      </div>
+
+      <div class="track" aria-label="포인트 타임라인">
+        <div id="trackBar" class="track-bar"><div id="trackHead" class="track-head"></div></div>
+        <div class="track-legend"><span><i class="lg pt"></i>포인트</span><span><i class="lg sv"></i>서브</span><span><i class="lg ht"></i>타구</span><span class="muted">클릭하면 그 장면으로 이동</span></div>
+      </div>
+    </section>
+
+    <!-- ── 작업 패널 ──────────────────────────────── -->
+    <section id="panel" class="panel" aria-label="작업">
+      <nav class="tabs" role="tablist">
+        <button role="tab" class="tab" data-tab="setup" aria-selected="true">준비 <span id="tabSetupBadge" class="tab-badge"></span></button>
+        <button role="tab" class="tab" data-tab="points" aria-selected="false">포인트 <span id="tabPointsBadge" class="tab-badge"></span></button>
+        <button role="tab" class="tab" data-tab="analysis" aria-selected="false">분석</button>
+        <button role="tab" class="tab" data-tab="grade" aria-selected="false">채점</button>
+      </nav>
+
+      <!-- 준비 -->
+      <div class="pane" data-pane="setup" role="tabpanel">
+        <ol class="steps">
+          <li class="step" id="stepVideo">
+            <div class="step-head"><span class="dot"></span><h3>영상</h3><span class="step-state" id="stepVideoState"></span></div>
+            <p class="step-text" id="fileSummary">영상을 추가하세요.</p>
+            <div class="step-actions">
+              <button id="btnProxy" class="btn">재생용 사본 만들기</button>
+              <span id="proxyStatus" class="hint"></span>
+            </div>
+          </li>
+
+          <li class="step" id="stepCourt">
+            <div class="step-head"><span class="dot"></span><h3>코트 위치</h3><span class="step-state" id="stepCourtState"></span></div>
+            <p class="step-text">공 속도와 인·아웃 판정에 필요해요. 코트 네 모서리를 한 번만 찍으면 돼요.</p>
+            <div class="step-actions">
+              <button id="btnCalibrate" class="btn">모서리 4곳 찍기</button>
+              <button id="btnCalibRefine" class="btn ghost" title="영상의 흰 라인에 맞춰 찍은 점의 오차를 줄여요">라인에 맞춰 보정</button>
+              <button id="btnCalibRevert" class="btn ghost hidden">보정 전으로</button>
+            </div>
+          </li>
+
+          <li class="step" id="stepPlayers">
+            <div class="step-head"><span class="dot"></span><h3>선수와 규칙</h3><span class="step-state" id="stepPlayersState"></span></div>
+            <form id="settingsForm" class="form" onsubmit="return false">
+              <div class="row">
+                <label class="field">경기
+                  <select id="mode"><option value="doubles">복식</option><option value="singles">단식</option></select>
+                </label>
+                <label class="field">Team A 처음 위치
+                  <select id="teamAStart"><option value="near">카메라 쪽</option><option value="far">먼 쪽</option></select>
+                </label>
+              </div>
+              <fieldset class="teams">
+                <div class="team"><span class="team-tag a">A</span>
+                  <label class="field"><span class="pos-label" data-team="A" data-pos="ad">애드 코트</span><input id="a1" autocomplete="off" /></label>
+                  <label class="field"><span class="pos-label" data-team="A" data-pos="deuce">듀스 코트</span><input id="a2" autocomplete="off" /></label>
+                </div>
+                <div class="team"><span class="team-tag b">B</span>
+                  <label class="field"><span class="pos-label" data-team="B" data-pos="ad">애드 코트</span><input id="b1" autocomplete="off" /></label>
+                  <label class="field"><span class="pos-label" data-team="B" data-pos="deuce">듀스 코트</span><input id="b2" autocomplete="off" /></label>
+                </div>
+              </fieldset>
+              <details class="more">
+                <summary>규칙 더 보기</summary>
+                <label class="field">서브 순서 <input id="rotation" placeholder="A1,B1,A2,B2" /></label>
+                <label class="field">왼손잡이 선수 <input id="leftHanded" placeholder="이름을 쉼표로 · 없으면 비워두기" /></label>
+                <label class="field">스코어보드 줄 순서
+                  <select id="positionMode"><option value="court">코트 위치를 따라감</option><option value="team">Team A가 항상 위</option></select>
+                </label>
+                <label class="check"><input id="changeEnds" type="checkbox" checked /> 홀수 게임마다 코트 바꿈</label>
+                <label class="check"><input id="noAd" type="checkbox" /> 노애드(듀스 없음)</label>
+              </details>
+              <button id="btnApplySettings" class="btn">저장</button>
+            </form>
+          </li>
+
+          <li class="step" id="stepAI">
+            <div class="step-head"><span class="dot"></span><h3>AI 준비</h3><span class="step-state" id="stepAIState"></span></div>
+            <dl class="kv">
+              <dt>공 추적·자세 인식</dt><dd><span id="aiStatus" class="hint">확인 중…</span> <button id="btnInstallAI" class="btn sm hidden">설치</button></dd>
+              <dt>Gemini (타구 종류 판정)</dt><dd><span id="shotKeyStatus" class="hint">확인 중…</span> <button id="btnShotKey" class="btn sm ghost">키 설정</button></dd>
+            </dl>
+            <div id="shotKeyForm" class="keyform hidden">
+              <label class="field">API 키 <input id="shotKeyInput" type="password" autocomplete="off" placeholder="비워 두고 저장하면 삭제" /></label>
+              <label class="field">모델 <input id="shotModelInput" placeholder="gemini-3.8-flash" /></label>
+              <div class="step-actions">
+                <button id="btnShotKeySave" class="btn primary sm">저장</button>
+                <button id="btnShotKeyClose" class="btn ghost sm">닫기</button>
+              </div>
+              <p class="hint">키는 이 PC의 <code>config/gemini.json</code>에만 저장돼요. 환경변수 <code>GEMINI_API_KEY</code>가 있으면 그걸 써요.</p>
+            </div>
+          </li>
+        </ol>
+      </div>
+
+      <!-- 포인트 -->
+      <div class="pane hidden" data-pane="points" role="tabpanel">
+        <div id="scoreboard" class="scoreboard"></div>
+
+        <div class="selected" id="selectedBox">
+          <p id="selectedInfo" class="hint">목록에서 포인트를 고르세요. 새 포인트는 영상 아래 <kbd>S</kbd> 시작 · <kbd>E</kbd> 끝으로 기록해요.</p>
+          <div class="selected-actions">
+            <div class="seg" role="group" aria-label="승자">
+              <button id="btnWinnerA" class="seg-btn" title="단축키 A">A 승</button>
+              <button id="btnWinnerB" class="seg-btn" title="단축키 B">B 승</button>
+              <button id="btnWinnerClear" class="seg-btn">미정</button>
+            </div>
+            <button id="btnSetStart" class="btn sm ghost">시작을 지금으로</button>
+            <button id="btnSetEnd" class="btn sm ghost">끝을 지금으로</button>
+            <button id="btnDelete" class="btn sm danger-ghost">삭제</button>
+          </div>
+        </div>
+
+        <div class="list-head"><h3>포인트</h3><span id="pointSummary" class="hint"></span></div>
+        <div id="points" class="points" role="listbox" aria-label="포인트 목록"></div>
+      </div>
+
+      <!-- 분석 -->
+      <div class="pane hidden" data-pane="analysis" role="tabpanel">
+        <div class="run">
+          <div class="run-text">
+            <h3>분석하기</h3>
+            <p class="hint">공을 추적해 서브 속도·구질과 랠리 타구를 찾고, 타구마다 종류(포핸드·백핸드·발리…)를 판정해요. 기록한 포인트 구간만 분석해요.</p>
+          </div>
+          <div class="run-actions">
+            <button id="btnAnalyzeAll" class="btn primary">분석하기</button>
+            <button id="btnStopAll" class="btn ghost hidden">멈추기</button>
+          </div>
+        </div>
+
+        <details class="more advanced">
+          <summary>고급 설정</summary>
+          <div class="row">
+            <label class="field">타구 판정 방식
+              <select id="shotMethod">
+                <option value="hits">타구마다 따로 (권장)</option>
+                <option value="v2">구간 영상 통째로</option>
+              </select>
+            </label>
+            <label class="field">범위
+              <select id="shotScope"><option value="points">기록한 포인트만</option><option value="full">영상 전체</option></select>
+            </label>
+            <label class="field">화질
+              <select id="shotQuality"><option value="auto">자동</option><option value="original">원본 (느림)</option><option value="proxy">재생용 사본 (빠름)</option></select>
+            </label>
+          </div>
+          <label class="check"><input id="shotHighRes" type="checkbox" /> 고해상도로 판독 (Gemini 비용 증가)</label>
+          <div class="step-actions">
+            <button id="btnServeMeasure" class="btn sm ghost">공 추적만 다시</button>
+            <button id="btnServeCancel" class="btn sm ghost hidden">공 추적 멈추기</button>
+            <button id="btnShotAnalyze" class="btn sm ghost">타구 판정만 다시</button>
+            <button id="btnShotCancel" class="btn sm ghost hidden">판정 멈추기</button>
+            <button id="btnFormation" class="btn sm ghost" disabled>선수 대형 분석</button>
+          </div>
+        </details>
+
+        <div id="shotResult" class="results"></div>
+        <div id="serveResult"></div>
+
+        <section class="export">
+          <h3>영상 만들기</h3>
+          <div class="export-row">
+            <div>
+              <b>분석 대시보드 영상</b>
+              <p class="hint">영상 + 통계 화면 (1280×1280)</p>
+              <label class="check"><input id="dashBall" type="checkbox" checked /> 공 궤적</label>
+              <label class="check"><input id="dashPose" type="checkbox" checked /> 선수 뼈대</label>
+            </div>
+            <div class="step-actions">
+              <button id="btnDashExport" class="btn" disabled>만들기</button>
+              <button id="btnDashCancel" class="btn ghost hidden">멈추기</button>
+            </div>
+          </div>
+          <div class="export-row">
+            <div><b>포인트만 이어 붙이기</b><p class="hint">쉬는 시간을 뺀 경기 영상</p></div>
+            <button id="btnExport" class="btn">만들기</button>
+          </div>
+          <div class="export-row">
+            <div><b>방송형 영상</b><p class="hint">스코어 자막이 들어간 경기 영상</p></div>
+            <button id="btnBroadcast" class="btn">만들기</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- 채점 -->
+      <div class="pane hidden" data-pane="grade" role="tabpanel">
+        <div class="callout plain">
+          <p>영상을 보며 라켓이 공에 닿는 순간 키를 누르면 정답이 기록되고, 분석 결과와 비교해 정확도를 계산해요.</p>
+          <p class="keys"><kbd>X</kbd> 서브 <kbd>F</kbd> 포핸드 <kbd>D</kbd> 백핸드 <kbd>V</kbd> 발리 <kbd>M</kbd> 스매시 <kbd>L</kbd> 로브
+            <span class="hint">· 그냥 누르면 카메라 쪽 선수, <kbd>Shift</kbd>와 같이 누르면 먼 쪽 선수 · <kbd>,</kbd> <kbd>.</kbd> 재생 속도</span></p>
+        </div>
+        <div id="labelEval"></div>
+        <div class="list-head"><h3>내가 기록한 정답</h3></div>
+        <div id="labelList"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js?v=0.6.0"></script>
+</body>
+</html>

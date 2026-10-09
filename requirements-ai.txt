@@ -1,0 +1,5 @@
+# Optional next-stage Formation/AI dependencies. The MVP server itself uses only Python stdlib + FFmpeg.
+numpy>=2.0
+opencv-python>=4.10
+ultralytics>=8.3
+ruptures>=1.1.9

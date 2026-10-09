@@ -1,0 +1,24 @@
+# secrets — the Gemini API key lives here
+config/
+
+# match footage and anything made from it (players' faces, names, results)
+*.mp4
+*.mov
+*.mkv
+cache/
+exports/
+projects/
+
+# model weights: large, downloaded on first use
+models/
+*.pt
+*.pth
+*.pth.tar
+
+# python / tools
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.log
+*.part
