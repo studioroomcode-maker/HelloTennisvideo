@@ -88,13 +88,15 @@ def find_point_hits(points, serves, meter, report=None, cancelled=None) -> dict:
     from analysis.hit_detect import find_rally_hits
     report = report or (lambda d: None)
     anchors = [{"t": s["contact_t"], "side": s["server_end"], "fault": s["call"] in ("net", "out")} for s in serves]
-    hits, failed = [], []
+    hits, failed, arcs = [], [], {}
     for k, p in enumerate(points):
         if cancelled and cancelled():
             raise Cancelled()
         report({"percent": 50 + 45 * k / max(1, len(points)), "message": f"랠리 타구 찾는 중 · 포인트 {k + 1}/{len(points)}"})
         try:
-            found = find_rally_hits(meter, meter.src, p["start"], p["end"], anchors)
+            point_arcs: list = []
+            found = find_rally_hits(meter, meter.src, p["start"], p["end"], anchors, arcs_out=point_arcs)
+            arcs[p["id"]] = point_arcs
         except Exception as exc:
             failed.append(f"#{k + 1}: {exc}")
             continue
@@ -102,7 +104,7 @@ def find_point_hits(points, serves, meter, report=None, cancelled=None) -> dict:
             h.update(point_id=p["id"], point_no=k + 1)
         hits += found
     rally = [h for h in hits if not h.get("serve")]
-    return {"hits": hits, "failed": failed,
+    return {"hits": hits, "failed": failed, "arcs": arcs,
             "stats": {"points": len(points), "rally_hits": len(rally),
                       "near": sum(h["side"] == "near" for h in rally), "far": sum(h["side"] == "far" for h in rally),
                       "with_sound": sum(1 for h in rally if h.get("audio"))}}

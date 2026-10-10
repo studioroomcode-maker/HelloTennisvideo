@@ -31,7 +31,7 @@ for d in (CACHE, PROJECTS, EXPORTS, CONFIG):
 STATE_LOCK = threading.RLock()
 PROJECT = new_project()
 CURRENT_PROJECT_PATH = PROJECTS / "current_project.json"
-APP_VERSION = "0.6.0-ui"
+APP_VERSION = "0.7.0-court-views"
 PROGRESS_API_VERSION = 4
 
 

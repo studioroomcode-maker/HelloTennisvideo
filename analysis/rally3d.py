@@ -131,16 +131,27 @@ def _meet(a, b):
     return best
 
 
-def arc_hits(tracks, court: Court, onsets=None) -> list[dict]:
-    """[{"t", "side", "window": [t_a, t_b], "meet": [x, y, z], "on_side", "plausible"}] from own-court tracks.
-
-    on_side: the arcs meet over the hitter's half; plausible: also at a height a racket reaches."""
+def fit_arcs(tracks, court: Court) -> list[dict]:
+    """The good 3D flight arcs of own-court tracks, in time order."""
     fitter = ArcFitter(court)
     arcs = []
     for tr in tracks:
         if len(tr) >= 16:
             arcs += fitter.split(tr[::2])
-    arcs = sorted((a for a in arcs if _good(a)), key=lambda a: a["t0"])
+    return sorted((a for a in arcs if _good(a)), key=lambda a: a["t0"])
+
+
+def arcs_json(arcs) -> list[dict]:
+    """Arcs as plain numbers, for the cache (the dashboard draws the ball's 3D path from them)."""
+    return [{"t0": round(a["t0"], 3), "t1": round(a["t1"], 3), "p": [round(float(c), 3) for c in a["p"]],
+             "v": [round(float(c), 3) for c in a["v"]], "rms": round(float(a["rms"]), 2)} for a in arcs]
+
+
+def arc_hits(tracks, court: Court, onsets=None, arcs=None) -> list[dict]:
+    """[{"t", "side", "window": [t_a, t_b], "meet": [x, y, z], "on_side", "plausible"}] from own-court tracks.
+
+    on_side: the arcs meet over the hitter's half; plausible: also at a height a racket reaches."""
+    arcs = fit_arcs(tracks, court) if arcs is None else arcs
     sounds = [o for o in (onsets or []) if o["strength"] >= 3.0]
     out = []
     for a, b in zip(arcs, arcs[1:]):

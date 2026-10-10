@@ -321,10 +321,11 @@ def mark_bounces(hits: list[dict], tracks, court: Court):
         h["bounced"] = False if seen and max(seen) >= t1 - SEEN_GAP else None
 
 
-def find_rally_hits(meter, src: str, start: float, end: float, serves=None) -> list[dict]:
+def find_rally_hits(meter, src: str, start: float, end: float, serves=None, arcs_out: list | None = None) -> list[dict]:
     """Track the ball over one point (in 8 s slices so memory stays bounded) and detect its hits.
 
-    meter: ServeMeter (its detector and court); serves: [{"t", "side", "fault"}] in or near the point.
+    meter: ServeMeter (its detector and court); serves: [{"t", "side", "fault"}] in or near the point;
+    arcs_out: if given, receives the ball's fitted 3D flight arcs (for drawing its path).
     """
     from analysis.audio_onset import hit_candidates
     t0, t1 = start - 1.5, end + 1.0
@@ -336,9 +337,12 @@ def find_rally_hits(meter, src: str, start: float, end: float, serves=None) -> l
     onsets = hit_candidates(src, [(t0, t1)], min_ratio=2.0)
     hits = detect_hits(tracks, meter.court, onsets, start - 1.0, end + 0.5, serves)
     own = [tr for tr in tracks if own_court(tr, meter.court)]
-    from analysis.rally3d import arc_hits, merge
+    from analysis.rally3d import arc_hits, arcs_json, fit_arcs, merge
     try:  # lobs and smashes that never cross the tape row in the image
-        hits = merge(hits, arc_hits(own, meter.court, onsets), start - 1.0, end + 0.5, serves)
+        arcs = fit_arcs(own, meter.court)
+        hits = merge(hits, arc_hits(own, meter.court, onsets, arcs=arcs), start - 1.0, end + 0.5, serves)
+        if arcs_out is not None:
+            arcs_out.extend(arcs_json(arcs))
     except Exception:
         pass
     mark_bounces(hits, tracks, meter.court)

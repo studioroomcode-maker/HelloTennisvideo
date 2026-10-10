@@ -29,8 +29,8 @@ def score_rows(point: dict, settings: dict) -> list[dict]:
     return rows
 
 
-def render(point: dict, settings: dict, size: tuple[int, int], fonts: Fonts | None = None):
-    """Transparent RGBA frame of the video's size with the scoreboard in the top-left corner."""
+def render(point: dict, settings: dict, size: tuple[int, int], fonts: Fonts | None = None, corner: str = "tl"):
+    """Transparent RGBA frame of the video's size with the scoreboard in a top corner ("tl" or "tr")."""
     from PIL import Image, ImageDraw
     fonts = fonts or Fonts()
     W, H = size
@@ -44,8 +44,8 @@ def render(point: dict, settings: dict, size: tuple[int, int], fonts: Fonts | No
     name_w = max(d.textlength(r["name"], font=f_name) for r in rows)
     col = 46 * s
     pts_w = 70 * s
-    x0, y0 = 40 * s, 40 * s
     width = pad + 14 * s + name_w + 30 * s + (col if show_sets else 0) + col + 10 * s + pts_w
+    x0, y0 = (W - 40 * s - width if corner == "tr" else 40 * s), 40 * s
     height = row_h * 2 + gap
     d.rounded_rectangle([x0 + 2 * s, y0 + 6 * s, x0 + width + 2 * s, y0 + height + 6 * s], radius=14 * s, fill=(0, 0, 0, 80))
     d.rounded_rectangle([x0, y0, x0 + width, y0 + height], radius=14 * s, fill=rgba(BG, 232))
