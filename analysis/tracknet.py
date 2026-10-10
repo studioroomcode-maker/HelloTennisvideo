@@ -112,15 +112,17 @@ class BallDetector:
         import numpy as np
         torch = self.torch
         out = [None, None]
-        idx = list(range(2, len(frames_bgr_small)))
-        for k in range(0, len(idx), batch):
-            group = idx[k:k + batch]
-            stack = np.stack([np.concatenate([frames_bgr_small[i], frames_bgr_small[i - 1],
-                                              frames_bgr_small[i - 2]], axis=2) for i in group])
+        n = len(frames_bgr_small)
+        for k in range(2, n, batch):
+            group = list(range(k, min(n, k + batch)))
+            # each frame goes up once; the 9-channel inputs (frame, previous, the one before) are
+            # put together on the GPU (building them on the CPU took a quarter of the time)
+            raw = torch.from_numpy(np.stack(frames_bgr_small[k - 2:group[-1] + 1])).to(self.device)
+            x = torch.cat([raw[2:], raw[1:-1], raw[:-2]], dim=3)
             if self.device == "cuda" and len(group) < batch:
                 # keep one batch shape: cuDNN re-tunes (slowly) for every new shape it meets
-                stack = np.concatenate([stack, np.repeat(stack[-1:], batch - len(group), axis=0)])
-            x = torch.from_numpy(stack).to(self.device).permute(0, 3, 1, 2)
+                x = torch.cat([x, x[-1:].expand(batch - len(group), *x.shape[1:])])
+            x = x.permute(0, 3, 1, 2)
             x = x.half() / 255.0 if self.device == "cuda" else x.float() / 255.0
             with torch.no_grad():
                 levels = self.model(x).argmax(dim=1).to(torch.uint8).cpu().numpy()

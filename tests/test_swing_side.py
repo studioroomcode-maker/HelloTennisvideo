@@ -49,5 +49,40 @@ class SwingSideTests(unittest.TestCase):
         self.assertLess(res["swing"], -0.5)
 
 
+class PoseBatchTests(unittest.TestCase):
+    def test_poses_come_back_in_crop_pixels_with_frame_numbers(self):
+        import numpy as np
+
+        class Fake:  # one person per frame, at a spot that moves with the frame number
+            def predict(self, imgs, **kw):
+                out = []
+                for img in imgs:
+                    i = int(img[0, 0, 0])
+                    kp = np.zeros((1, 17, 3), np.float32)
+                    kp[0, :, :2], kp[0, :, 2] = (10 + i, 20), 0.9
+                    box = np.array([[0, 0, 40 + i, 80]], np.float32)
+                    out.append(type("R", (), {"keypoints": type("K", (), {"data": _T(kp), "__len__": lambda s: 1})(),
+                                              "boxes": type("B", (), {"xyxy": _T(box)})()})())
+                return out
+
+        frames = np.stack([np.full((8, 8, 3), i, np.uint8) for i in range(5)])
+        dets = ss.detect_poses(Fake(), frames, 1280, k=3.0, batch=2)
+        self.assertEqual([i for i, _ in dets], [0, 1, 2, 3, 4])
+        kp, box = dets[4][1][0]
+        self.assertEqual(kp[0][:2], [42.0, 60.0])   # (10 + 4, 20) x 3
+        self.assertEqual(box, [0.0, 0.0, 132.0, 240.0])
+
+
+class _T:
+    def __init__(self, a):
+        self.a = a
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        return self.a.copy()
+
+
 if __name__ == "__main__":
     unittest.main()

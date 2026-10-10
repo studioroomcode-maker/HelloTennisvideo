@@ -32,6 +32,7 @@ SAME_CROSS = 0.3      # s; crossings this close in the same direction are one
 NEAR_DELAY, FAR_DELAY = 0.12, 0.17  # s; a hit is heard this long after it happens (A/V offset + distance)
 BOUNCE_PX = 3.0       # image px (640x360) the ball must come down to and go back up from a bounce
 BOUNCE_GAP = 0.15     # s; a "bounce" closer than this to the contact is the racket itself
+GAP_JOIN_S = 0.8      # s of lost ball a bounce may be found across
 SEEN_GAP = 0.4        # s; "no bounce" needs the ball seen this close to the contact, else it is unknown
 
 
@@ -300,6 +301,27 @@ def bounce_before(tracks, court: Court, t0: float, t1: float):
     return best
 
 
+def bounce_across_gap(tracks, court: Court, t0: float, t1: float):
+    """Like bounce_before, over this court's ball points joined across tracks. TrackNet often loses
+    the ball right at a far bounce, so its way down and its way back up end up in two tracks
+    (69.3 s on the test video): the peak sits at the join, with only one point on one side of it
+    inside a gap of up to GAP_JOIN_S."""
+    pts = sorted(q for tr in tracks if own_court(tr, court) for q in tr if t0 <= q[0] <= t1)
+    best = None
+    for i, (t, x, y) in enumerate(pts):
+        if t > t1 - BOUNCE_GAP:
+            break
+        # across a gap, compare with the 0.3 s the ball was last (or next) seen
+        tb = t if not i or t - pts[i - 1][0] > GAP_JOIN_S else min(t, pts[i - 1][0] + 1e-6)
+        before = [q[2] for q in pts[:i] if q[0] >= tb - 0.3]
+        ta = t if i + 1 >= len(pts) or pts[i + 1][0] - t > GAP_JOIN_S else max(t, pts[i + 1][0] - 1e-6)
+        after = [q[2] for q in pts[i + 1:] if q[0] <= ta + 0.3]
+        if (before and after and y >= max(before + after) and y - min(before) >= BOUNCE_PX
+                and y - min(after) >= BOUNCE_PX):
+            best = t
+    return best
+
+
 def mark_bounces(hits: list[dict], tracks, court: Court):
     """Set "bounced" on every rally hit: did the ball bounce on the hitter's side first?"""
     for k, h in enumerate(hits):
@@ -313,6 +335,8 @@ def mark_bounces(hits: list[dict], tracks, court: Court):
             continue
         t0, t1 = prev["t"] + BOUNCE_GAP, contact_time(h)
         b = bounce_before(tracks, court, t0, t1)
+        if b is None:
+            b = bounce_across_gap(tracks, court, t0, t1)
         if b is not None:
             h["bounced"], h["bounce_t"] = True, round(b, 3)
             continue

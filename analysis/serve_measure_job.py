@@ -37,12 +37,15 @@ def measure_file(project: dict, file_entry: dict, root: Path, shots: dict | None
                        pick_source(file_entry, "original", 0)[0],
                        float((file_entry.get("metadata") or {}).get("fps") or 59.4))
 
+    # every point's ball once, up front (the serve, 2nd-serve and rally passes then read memory)
+    meter.prefetch([(p["start"] - 1.5, p["end"] + 1.3) for p in points], cancelled=cancelled,
+                   progress=lambda f: report({"percent": round(3 + 40 * f, 1), "message": f"공 추적 중 · {round(f * 100)}%"}))
     jobs = [("point", p) for p in points]
     serves: list[dict] = []
     for k, (kind, p) in enumerate(jobs):
         if cancelled():
             raise Cancelled()
-        report({"percent": 3 + 45 * k / max(1, len(jobs)),
+        report({"percent": 43 + 5 * k / max(1, len(jobs)),
                 "message": f"서브 공 추적 중 · 포인트 {k + 1}/{len(jobs)}"})
         for n, s in enumerate(meter.at_point(p["start"], p["end"])):
             s.update(point_id=p["id"], point_no=k + 1, serve_number=n + 1)
@@ -117,19 +120,24 @@ def add_motion_types(serves, project, file_entry, meter, root, report=None, canc
     if not serves or not pose_ready():
         return
     from ultralytics import YOLO
-    from analysis.serve_motion import leg_split, learn_types
+    from concurrent.futures import ThreadPoolExecutor
+    from analysis.serve_motion import leg_split, learn_types, motion_clip
     meta = file_entry.get("metadata") or {}
     W, H = int(meta.get("width") or 1920), int(meta.get("height") or 1080)
     model = YOLO(str(ensure_pose_weights(root, report)))
-    for k, s in enumerate(serves):
-        if cancelled and cancelled():
-            raise Cancelled()
-        if report:
-            report({"percent": 48.0 + 2.0 * k / len(serves), "message": f"서브 동작 측정 중 · {k + 1}/{len(serves)}"})
-        try:
-            s["leg_split"] = leg_split(model, meter.src, meter.court, W, H, s)
-        except Exception:
-            s["leg_split"] = None
+    with ThreadPoolExecutor(3) as pool:  # FFmpeg cuts the next serves while the GPU reads this one
+        clips = {k: pool.submit(motion_clip, meter.src, meter.court, W, H, s) for k, s in enumerate(serves[:4])}
+        for k, s in enumerate(serves):
+            if cancelled and cancelled():
+                raise Cancelled()
+            if k + 4 < len(serves):
+                clips[k + 4] = pool.submit(motion_clip, meter.src, meter.court, W, H, serves[k + 4])
+            if report:
+                report({"percent": 48.0 + 2.0 * k / len(serves), "message": f"서브 동작 측정 중 · {k + 1}/{len(serves)}"})
+            try:
+                s["leg_split"] = leg_split(model, meter.src, meter.court, W, H, s, clips.pop(k).result())
+            except Exception:
+                s["leg_split"] = None
     labels = [l for l in project.get("shot_labels", []) if l.get("file_id") == file_entry["id"]]
     learn_types(serves, labels, project.get("points", []))
     for s in serves:

@@ -27,14 +27,47 @@ BALL_NEAR = 1.0                 # ball within this many body heights of a player
 MIN_ROWS = 8                    # frames a person needs to be judged
 
 
-def _frames(src: str, t: float, box, fps: int):
+def pose_size(side: str) -> int:
+    """YOLO input size: far players are ~100 px tall in 4K and are found reliably only when upscaled."""
+    return 2560 if side == "far" else 1280
+
+
+def decode_clip(src: str, t0: float, dur: float, box, fps: int, size: int):
+    """Frames of the crop `box` over [t0, t0 + dur) and the factor back to crop pixels. A crop
+    bigger than the pose input is shrunk here (YOLO would shrink it anyway): the full-width near
+    crop of a 4K video was 17 MB a frame through the pipe, and decoding cost 3x the pose itself."""
     import numpy as np
     x, y, w, h = box
-    raw = decode_raw(["-nostdin", "-loglevel", "error", "-ss", f"{max(0.0, t - PRE):.3f}", "-i", src,
-                      "-t", f"{PRE + POST:.3f}", "-vf", f"crop={w}:{h}:{x}:{y},fps={fps}", "-f", "rawvideo",
-                      "-pix_fmt", "bgr24", "-"])
+    vf = f"crop={w}:{h}:{x}:{y},fps={fps}"
+    k = max(w, h) / size
+    if k > 1:
+        w, h = round(w / k / 2) * 2, round(h / k / 2) * 2
+        vf += f",scale={w}:{h}:flags=area"
+    else:
+        k = 1.0
+    raw = decode_raw(["-nostdin", "-loglevel", "error", "-ss", f"{max(0.0, t0):.3f}", "-i", src,
+                      "-t", f"{dur:.3f}", "-vf", vf, "-f", "rawvideo", "-pix_fmt", "bgr24", "-"])
     n = len(raw) // (w * h * 3)
-    return np.frombuffer(raw[:n * w * h * 3], np.uint8).reshape(n, h, w, 3)
+    return np.frombuffer(raw[:n * w * h * 3], np.uint8).reshape(n, h, w, 3), k
+
+
+def detect_poses(model, frames, size: int, k: float = 1.0, batch: int = 8) -> list:
+    """[(frame index, [(keypoints, xyxy), ...]), ...] in crop pixels, frames run through YOLO in batches."""
+    import torch
+    half = torch.cuda.is_available()
+    dets = []
+    for b in range(0, len(frames), batch):
+        rs = model.predict(list(frames[b:b + batch]), imgsz=size, conf=0.25, half=half, verbose=False)
+        for j, r in enumerate(rs):
+            if r.keypoints is None or not len(r.keypoints):
+                continue
+            kps = r.keypoints.data.cpu().numpy()
+            boxes = r.boxes.xyxy.cpu().numpy()
+            if k != 1.0:
+                kps[:, :, :2] *= k
+                boxes *= k
+            dets.append((b + j, list(zip(kps.tolist(), boxes.tolist()))))
+    return dets
 
 
 def _on_side(court: Court, side: str, fx: float, fy: float) -> bool:
@@ -144,23 +177,36 @@ class SwingJudge:
         self.fps = fps or (FPS if self.gpu else 15)
         self.src, self.court, self.W, self.H = src, court, W, H
 
-    def __call__(self, hit: dict) -> dict | None:
+    def _clip(self, hit: dict):
         from analysis.hit_shots import crop_box  # hit_shots imports this module
         side = hit["side"]
         tc = contact_time(hit)
         box = crop_box(self.court, side, self.W, self.H)
-        frames = _frames(self.src, tc, box, self.fps)
-        # far players are ~100 px tall in 4K; pose finds them reliably only when upscaled
-        size = 2560 if side == "far" else 1280
-        dets = []
-        for i, img in enumerate(frames):
-            r = self.model.predict(img, imgsz=size, conf=0.25, verbose=False)[0]
-            if r.keypoints is None or not len(r.keypoints):
-                continue
-            dets.append((i, list(zip(r.keypoints.data.cpu().numpy().tolist(), r.boxes.xyxy.cpu().numpy().tolist()))))
-        people = track_people(dets, self.court, side, box, self.W, self.H)
+        size = pose_size(side)
+        return tc, box, size, decode_clip(self.src, tc - PRE, PRE + POST, box, self.fps, size)
+
+    def _judge(self, hit: dict, clip) -> dict | None:
+        tc, box, size, (frames, k) = clip
+        side = hit["side"]
+        people = track_people(detect_poses(self.model, frames, size, k), self.court, side, box, self.W, self.H)
         res = judge_people(people, hit.get("balls"), tc, side, box, self.W, self.H, self.fps)
         if res:
             res["swing"] = round(res["swing"], 3)
             res["dist"] = None if res["dist"] is None else round(res["dist"], 2)
         return res
+
+    def __call__(self, hit: dict) -> dict | None:
+        return self._judge(hit, self._clip(hit))
+
+    def many(self, hits: list[dict], workers: int = 3):
+        """Yield (index, result) in order. FFmpeg cuts the next clips while the GPU runs the pose
+        model on this one: decoding was the slow half, and it runs off the GPU."""
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(workers) as pool:
+            ahead = workers + 1
+            futs = {k: pool.submit(self._clip, h) for k, h in enumerate(hits[:ahead])}
+            for k, h in enumerate(hits):
+                clip = futs.pop(k).result()
+                if k + ahead < len(hits):
+                    futs[k + ahead] = pool.submit(self._clip, hits[k + ahead])
+                yield k, self._judge(h, clip)

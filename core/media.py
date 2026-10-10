@@ -316,6 +316,9 @@ def _run_ffmpeg_with_progress(
 def create_proxy(src: str, dst: str, width=1280, progress_callback=None, duration: float | None = None) -> dict:
     """Create browser-friendly H.264 proxy with real FFmpeg progress.
 
+    Always 8-bit 4:2:0: browsers can't play 10-bit H.264 (High 10), and h264_nvenc
+    refuses 10-bit input outright, so a 10-bit phone video must be converted here.
+
     The callback receives actual encoded media time, frame count, speed, percent,
     and ETA. NVIDIA paths are tried first and CPU x264 is the fallback.
     """
@@ -334,7 +337,7 @@ def create_proxy(src: str, dst: str, width=1280, progress_callback=None, duratio
         attempts.append(("NVIDIA decode + NVENC", [
             ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
             "-c:v", "hevc_cuvid", "-resize", f"{width}x720", "-i", src,
-            "-map", "0:v:0", "-map", "0:a?",
+            "-map", "0:v:0", "-map", "0:a?", "-pix_fmt", "yuv420p",
             "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "25",
             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
             "-progress", "pipe:1", "-nostats", str(dstp)
@@ -343,7 +346,7 @@ def create_proxy(src: str, dst: str, width=1280, progress_callback=None, duratio
     if supports_token("encoder", "h264_nvenc"):
         attempts.append(("NVENC", [
             ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", src,
-            "-vf", f"scale={width}:-2", "-map", "0:v:0", "-map", "0:a?",
+            "-vf", f"scale={width}:-2,format=yuv420p", "-map", "0:v:0", "-map", "0:a?",
             "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "25",
             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
             "-progress", "pipe:1", "-nostats", str(dstp)
@@ -351,7 +354,7 @@ def create_proxy(src: str, dst: str, width=1280, progress_callback=None, duratio
 
     attempts.append(("CPU x264", [
         ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", src,
-        "-vf", f"scale={width}:-2", "-map", "0:v:0", "-map", "0:a?",
+        "-vf", f"scale={width}:-2,format=yuv420p", "-map", "0:v:0", "-map", "0:a?",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "25",
         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
         "-progress", "pipe:1", "-nostats", str(dstp)

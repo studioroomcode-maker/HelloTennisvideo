@@ -642,16 +642,48 @@ class ServeMeter:
             gaps.append((cur, t1))
         return [(a, b) for a, b in gaps if b - a > 0.5 / self.fps]
 
-    def _detect(self, t0: float, t1: float):
+    def _detect(self, t0: float, t1: float, frames_times=None):
         """Decode [t0, t1) and store each frame's ball blobs. The detector looks at three frames,
         so two extra frames before t0 are decoded and only used as history."""
-        lead = 2.5 / self.fps
-        frames, times = read_window(self.src, t0 - lead, t1)
+        frames, times = frames_times or read_window(self.src, t0 - 2.5 / self.fps, t1)
         heats = self.det.heat_levels(frames)
         for t, h in zip(times, heats):
             if h is not None and t >= t0 - 0.25 / self.fps:
                 self._blobs[round(t, 4)] = heat_to_blobs(h)
         self._covered.append((t0, t1))
+
+    def prefetch(self, spans, progress=None, cancelled=None, slice_s: float = 8.0):
+        """Run the detector over all `spans` up front, FFmpeg decoding the next slice while the GPU
+        works on this one (decoding was a third of the tracking time and needs no GPU). Later
+        tracks() calls over these spans are then served from memory."""
+        from concurrent.futures import ThreadPoolExecutor
+        merged = []
+        for a, b in sorted((max(0.0, a), b) for a, b in spans):
+            if merged and a <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], b)
+            else:
+                merged.append([a, b])
+        slices = []
+        for a, b in merged:
+            for ga, gb in self._missing(a, b):
+                while ga < gb - 0.5 / self.fps:
+                    slices.append((ga, min(gb, ga + slice_s)))
+                    ga = slices[-1][1]
+        if not slices:
+            return
+        lead = 2.5 / self.fps
+        with ThreadPoolExecutor(1) as pool:
+            fut = pool.submit(read_window, self.src, slices[0][0] - lead, slices[0][1])
+            for k, (a, b) in enumerate(slices):
+                if cancelled and cancelled():
+                    from analysis.shot_analysis import Cancelled
+                    raise Cancelled()
+                got = fut.result()
+                if k + 1 < len(slices):
+                    fut = pool.submit(read_window, self.src, slices[k + 1][0] - lead, slices[k + 1][1])
+                self._detect(a, b, got)
+                if progress:
+                    progress((k + 1) / len(slices))
 
     def tracks(self, t0: float, t1: float):
         for a, b in self._missing(max(0.0, t0), t1):

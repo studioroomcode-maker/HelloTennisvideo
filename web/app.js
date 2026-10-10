@@ -139,6 +139,7 @@ function renderSettings(){
 }
 
 let shotLoadedFor=null;
+const proxyRev={};  // bumped when a copy is rebuilt, so the player doesn't keep the old one
 function renderCurrentFile(){
   const f=fileById(currentFileId);
   if(!f){
@@ -154,7 +155,7 @@ function renderCurrentFile(){
   $('#proxyStatus').textContent=f.proxy?'재생용 사본 있음':'';
   $('#btnProxy').textContent=f.proxy?'사본 다시 만들기':'재생용 사본 만들기';
   $('#btnProxy').classList.toggle('ghost',!!f.proxy); $('#btnProxy').classList.toggle('primary',!f.proxy);
-  const src=f.proxy?`/media/${f.id}`:'';
+  const src=f.proxy?`/media/${f.id}${proxyRev[f.id]?`?r=${proxyRev[f.id]}`:''}`:'';
   if(src && video.dataset.src!==src){ video.src=src; video.dataset.src=src; video.load(); }
   if(!src){ video.removeAttribute('src'); video.dataset.src=''; }
   $('#videoEmpty').classList.toggle('hidden',!!src);
@@ -173,11 +174,11 @@ function renderSteps(){
   const f=fileById(currentFileId); const s=project?.settings||{};
   const video_ok=!!f?.proxy, court_ok=(f?.calibration?.points?.length||0)>=4;
   const players_ok=!!(s.team_a?.[0] && s.team_b?.[0]);
-  const ai_ok=aiReady && !!shotConfig?.has_key;
+  const ai_ok=aiReady;
   setStep('stepVideo', !f?'todo':video_ok?'done':'todo', !f?'영상 없음':video_ok?'완료':'사본 필요');
   setStep('stepCourt', court_ok?'done':'todo', court_ok?'완료':'필요');
   setStep('stepPlayers', players_ok?'done':'todo', players_ok?'완료':'이름 입력');
-  setStep('stepAI', ai_ok?'done':'todo', ai_ok?'완료':(!aiReady?'설치 필요':'키 필요'));
+  setStep('stepAI', ai_ok?'done':'todo', ai_ok?'완료':'설치 필요');
   const n=[video_ok,court_ok,players_ok,ai_ok].filter(Boolean).length;
   const b=$('#tabSetupBadge'); b.textContent=n===4?'':`${n}/4`; b.classList.toggle('todo',n<4);
   const pts=filePoints().length; $('#tabPointsBadge').textContent=pts?String(pts):'';
@@ -287,6 +288,7 @@ let showCourtLines=false;
 $('#mode').addEventListener('change',updatePosLabels);
 $('#fileSelect').addEventListener('change',()=>{ currentFileId=$('#fileSelect').value; selectedPointId=null; renderCurrentFile(); renderPoints(); renderScoreboard(); renderSteps(); renderTrack(); });
 video.addEventListener('timeupdate',()=>{ $('#currentTime').textContent=fmt(video.currentTime); const d=trackDuration(); if(d) $('#trackHead').style.left=`${(video.currentTime/d*100).toFixed(3)}%`; });
+video.addEventListener('error',()=>{ if(video.dataset.src) setStatus('브라우저가 이 재생용 사본을 열지 못했어요. 준비 탭에서 “사본 다시 만들기”를 눌러 주세요.',true); });
 video.addEventListener('loadedmetadata',()=>{ $('#duration').textContent=fmt(video.duration); resizeOverlay(); renderTrack(); });
 window.addEventListener('resize',resizeOverlay);
 function setRate(r){ video.playbackRate=r; $$('.rate .chip').forEach(c=>c.classList.toggle('on',Number(c.dataset.rate)===r)); }
@@ -302,7 +304,7 @@ async function waitForProxyJob(fid){
     if(dur>0) parts.push(`${fmtClock(out)} / ${fmtClock(dur)}`);
     if(eta!==null&&Number.isFinite(eta)) parts.push(`약 ${fmtClock(eta)} 남음`);
     showProgress(Number(job.percent)||0, parts.join(' · '));
-    if(job.status==='done'){ await refresh(); await finishBusyProgress(`재생용 사본 완료 · ${fmtClock(job.elapsed_seconds||0)} 걸림`); return job; }
+    if(job.status==='done'){ proxyRev[fid]=Date.now(); await refresh(); await finishBusyProgress(`재생용 사본 완료 · ${fmtClock(job.elapsed_seconds||0)} 걸림`); return job; }
     if(job.status==='error'){ setBusyProgress(false); throw new Error(job.error||job.message||'사본 만들기 실패'); }
     await sleep(500);
   }
@@ -620,10 +622,11 @@ function waitForShotJob(fid){
   return shotPromise;
 }
 async function startServeMeasure(fid){ showProgress(0,'공 추적 시작 중… (처음 한 번은 모델을 내려받아요)'); await api(`/api/serve_measure/${fid}`,{}); return waitForServeJob(fid); }
+function shotNeedsKey(){ return $('#shotMethod').value!=='hits' || $('#shotGemini').checked; }
 async function startShotAnalysis(fid){
-  if(!shotConfig?.has_key){ showTab('setup'); $('#shotKeyForm').classList.remove('hidden'); throw new Error('Gemini 키가 필요해요. 준비 탭에서 설정하세요.'); }
+  if(shotNeedsKey() && !shotConfig?.has_key){ showTab('setup'); $('#shotKeyForm').classList.remove('hidden'); throw new Error('Gemini 키가 필요해요. 준비 탭에서 설정하세요.'); }
   showProgress(0,'타구 판정 시작 중…');
-  await api(`/api/shot_analysis/${fid}`,{scope:$('#shotScope').value,quality:$('#shotQuality').value,high_res:$('#shotHighRes').checked,prompt:$('#shotMethod').value});
+  await api(`/api/shot_analysis/${fid}`,{scope:$('#shotScope').value,quality:$('#shotQuality').value,high_res:$('#shotHighRes').checked,prompt:$('#shotMethod').value,gemini:$('#shotGemini').checked});
   return waitForShotJob(fid);
 }
 $('#btnAnalyzeAll').onclick=async()=>{
@@ -632,7 +635,7 @@ $('#btnAnalyzeAll').onclick=async()=>{
   try{
     const r=await startServeMeasure(fid);
     if(r!=='done') return;
-    if(!shotConfig?.has_key){ setStatus('공 추적은 끝났어요. Gemini 키가 없어 타구 종류 판정은 건너뛰었어요 (준비 탭에서 키 설정).'); return; }
+    if(shotNeedsKey() && !shotConfig?.has_key){ setStatus('공 추적은 끝났어요. Gemini 키가 없어 타구 종류 판정은 건너뛰었어요 (준비 탭에서 키 설정).'); return; }
     await startShotAnalysis(fid);
   }catch(e){ clearBusyProgressOnError(e.message); }
 };

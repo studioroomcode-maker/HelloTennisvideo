@@ -18,25 +18,24 @@ MIN_GAP = 0.04      # leg-split difference between the two classes' nearest exam
 LABEL_S = 1.0       # s between a labelled serve and a measured contact to pair them
 
 
-def leg_split(model, src: str, court, W: int, H: int, serve: dict):
-    """Largest vertical gap between the server's ankles after contact, in body heights (or None)."""
+def motion_clip(src: str, court, W: int, H: int, serve: dict):
+    """The server's half of the frame from just before contact through the follow-through."""
     from analysis.hit_shots import crop_box
+    from analysis.swing_side import decode_clip, pose_size
+    side = serve["server_end"]
+    box = crop_box(court, side, W, H)
+    size = pose_size(side)
+    return box, size, decode_clip(src, serve["contact_t"] - 0.1, AFTER_S + 0.1, box, FPS, size)
+
+
+def leg_split(model, src: str, court, W: int, H: int, serve: dict, clip=None):
+    """Largest vertical gap between the server's ankles after contact, in body heights (or None)."""
     from analysis import swing_side as ss
     from analysis.serve_speed import COURT_L
-    side, tc = serve["server_end"], serve["contact_t"]
-    box = crop_box(court, side, W, H)
-    x, y, w, h = box
-    from core.media import decode_raw
-    raw = decode_raw(["-nostdin", "-loglevel", "error", "-ss", f"{max(0.0, tc - 0.1):.3f}", "-i", src,
-                      "-t", f"{AFTER_S + 0.1:.3f}", "-vf", f"crop={w}:{h}:{x}:{y},fps={FPS}", "-f", "rawvideo",
-                      "-pix_fmt", "bgr24", "-"])
-    n = len(raw) // (w * h * 3)
-    frames = np.frombuffer(raw[:n * w * h * 3], np.uint8).reshape(n, h, w, 3)
-    dets = []
-    for i, img in enumerate(frames):
-        r = model.predict(img, imgsz=2560 if side == "far" else 1280, conf=0.25, verbose=False)[0]
-        if r.keypoints is not None and len(r.keypoints):
-            dets.append((i, list(zip(r.keypoints.data.cpu().numpy().tolist(), r.boxes.xyxy.cpu().numpy().tolist()))))
+    side = serve["server_end"]
+    box, size, (frames, k) = clip or motion_clip(src, court, W, H, serve)
+    x = box[0]
+    dets = ss.detect_poses(model, frames, size, k)
     people = ss.track_people(dets, court, side, box, W, H)
     if not people:
         return None

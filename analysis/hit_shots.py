@@ -38,8 +38,9 @@ FAR_SOUND_S = 0.15         # a far-side hit is heard about this much after it ha
 CLIP_FPS = 10              # frames per second Gemini samples from each clip
 BATCH = 20                 # clips per request
 SERVE_MATCH_S = 0.8        # a detected rally opener this close to a measured serve is that serve
+RESERVE_GAP_S = 3.0        # a rally restart from the server's end this long after the last hit is the 2nd serve
 VERSION = 2
-SWING_VERSION = 1
+SWING_VERSION = 2
 
 HIT = {
     "type": "OBJECT",
@@ -206,9 +207,12 @@ class HitShotJob:
     """Same result shape as ShotAnalysisJob, built from tracked hits instead of whole-video chunks."""
 
     def __init__(self, *, project: dict, file_entry: dict, api_key: str, model: str, cache_dir: Path,
-                 report=None, cancelled=None):
+                 report=None, cancelled=None, use_gemini: bool = True):
         self.project, self.f = project, file_entry
         self.api_key, self.model = api_key, model or gemini.DEFAULT_MODEL
+        # without Gemini the ball (bounce, serve order) and the pose (swing side) decide alone:
+        # as accurate on the labelled points (41/44 both ways) and minutes instead of half an hour
+        self.use_gemini = bool(use_gemini and api_key)
         self.cache_dir = Path(cache_dir)
         self.report = report or (lambda d: None)
         self.cancelled = cancelled or (lambda: False)
@@ -228,9 +232,15 @@ class HitShotJob:
         measured = json.loads(measured_fp.read_text(encoding="utf-8")) if measured_fp.exists() else {"serves": []}
         serve_ts = [s["contact_t"] for s in measured.get("serves", [])]
         everything = tracked.get("hits", [])
-        for i, h in enumerate(everything):  # straight after a serve with no rally between: a 2nd serve the meter missed?
+        served: dict[str, float] = {}
+        for i, h in enumerate(everything):  # what came before each hit in its point, to spot serves the meter missed
             prev = everything[i - 1] if i else None
-            h["_after_serve"] = bool(prev and prev.get("serve") and prev.get("point_id") == h.get("point_id"))
+            same = bool(prev and prev.get("point_id") == h.get("point_id"))
+            h["_after_serve"] = bool(same and prev.get("serve"))
+            h["_last_serve"] = served.get(h.get("point_id"))
+            h["_gap"] = h["t"] - prev["t"] if same else None
+            if h.get("serve"):
+                served[h.get("point_id")] = h["t"]
         hits = [h for h in everything if not h.get("serve")
                 and not (h.get("first") and any(abs(h["t"] - t) <= SERVE_MATCH_S for t in serve_ts))]
         if not hits:
@@ -244,7 +254,7 @@ class HitShotJob:
         segs = build_segments(self.f, self.project.get("points") or [], "points")
         hits = [dict(h, note=hand_note(settings, self._seg(segs, h), h["side"])) for h in hits]
         warnings: list[str] = []
-        batches = [hits[i:i + BATCH] for i in range(0, len(hits), BATCH)]
+        batches = [hits[i:i + BATCH] for i in range(0, len(hits), BATCH)] if self.use_gemini else []
         answers: dict[int, dict] = {}
         usage = {"prompt": 0, "output": 0}
         used_models = set()
@@ -289,7 +299,10 @@ class HitShotJob:
             overhead_in_rally = shot == "serve" and (not h.get("first") or _server_end(seg) not in (None, h["side"]))
             if overhead_in_rally:
                 shot = "smash"
-            missed_serve = bool(h.get("first") and h.get("_after_serve") and _server_end(seg) == h["side"])
+            # a rally opener from the server's end is a serve the meter missed when it opens the point,
+            # follows a serve straight away, or comes after a pause (the fault's return in between was dead)
+            missed_serve = bool(h.get("first") and _server_end(seg) == h["side"] and (
+                h.get("_after_serve") or h.get("_last_serve") is None or (h.get("_gap") or 0) >= RESERVE_GAP_S))
             if missed_serve:
                 shot = "serve"
             ev = {
@@ -324,16 +337,19 @@ class HitShotJob:
                 elif h["bounced"] and ev["shot"] == "volley" and ev.get("racket_side") in ("forehand", "backhand"):
                     ev["shot"] = ev["racket_side"]
                     ev["fixes"].append("ball_bounced")
-            if ev["shot"] == "other" and h.get("bounced") is not None:  # the AI saw no hit; ball + sound say there was
-                if not h["bounced"]:
+            if ev["shot"] == "other":  # the AI saw no hit (or was not asked); ball + sound say there was
+                if h.get("bounced") is False:
                     ev["shot"] = "volley"
                 elif ev.get("racket_side") in ("forehand", "backhand"):
                     ev["shot"] = ev["racket_side"]
                 if ev["shot"] != "other":
                     ev["fixes"].append("tracked_hit_type")
             if missed_serve:
-                ev["fixes"].append("second_serve_after_fault")
-                ev["serve_number"] = 2
+                ev["fixes"].append("second_serve_after_fault" if h.get("_last_serve") is not None else "serve_by_tracking")
+                ev["serve_number"] = 2 if h.get("_last_serve") is not None else 0
+                if h.get("_last_serve") is not None:  # the fault was returned: those hits were dead balls
+                    dead = [e for e in events if e["point_id"] == ev["point_id"] and e["t"] > h["_last_serve"]]
+                    events = [e for e in events if e not in dead]
             if overhead_in_rally:
                 ev["fixes"].append("serve_mid_rally")
             if a and a.get("found_hit") is False:
@@ -343,12 +359,14 @@ class HitShotJob:
             _attribute(ev, seg, settings)
             events.append(ev)
         if unknown:
-            warnings.append(f"AI 답도 공 궤적 단서도 없어 종류를 모르는 타구 {unknown}개는 ‘기타’로 뒀어.")
+            why = "AI 답도 공 궤적 단서도 없어" if self.use_gemini else "공 궤적·스윙으로 정하지 못해"
+            warnings.append(f"{why} 종류를 모르는 타구 {unknown}개는 ‘기타’로 뒀어.")
 
         result = {
             "version": VERSION, "prompt_variant": "hits", "serve_anchors": len(serve_ts),
             "file_id": fid, "file_name": self.f.get("name"),
-            "analyzed_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "model": self.model,
+            "analyzed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "model": self.model if self.use_gemini else "공 궤적 + 자세",
             "scope": "points", "source": "original",
             "analyzed_seconds": round(sum(s["end"] - s["start"] for s in segs), 1),
             "segment_count": len(segs), "chunk_count": len(batches), "failed_chunks": 0,
@@ -375,22 +393,20 @@ class HitShotJob:
             cache = json.loads(fp.read_text(encoding="utf-8")) if fp.exists() else {}
         except Exception:
             cache = {}
-        judge, out = None, {}
-        for k, h in enumerate(hits):
-            self._check()
-            key = f"{SWING_VERSION}:{h['t']:.2f}:{h['side']}"
-            if key not in cache:
-                self.report({"percent": round(5 + 45 * k / len(hits), 1),
-                             "message": f"타구 {k + 1}/{len(hits)} 스윙 방향 측정 중 (포즈 인식)"})
-                if judge is None:
-                    root = Path(__file__).resolve().parents[1]
-                    judge = SwingJudge(ensure_pose_weights(root, self.report), src, court, W, H)
-                cache[key] = judge(h)
-                fp.parent.mkdir(parents=True, exist_ok=True)
-                fp.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
-            if cache[key]:
-                out[k] = cache[key]
-        return out
+        keys = [f"{SWING_VERSION}:{h['t']:.2f}:{h['side']}" for h in hits]
+        todo = [k for k, key in enumerate(keys) if key not in cache]
+        if todo:
+            root = Path(__file__).resolve().parents[1]
+            judge = SwingJudge(ensure_pose_weights(root, self.report), src, court, W, H)
+            for n, (j, res) in enumerate(judge.many([hits[k] for k in todo])):
+                self._check()
+                self.report({"percent": round(5 + 45 * n / len(todo), 1),
+                             "message": f"타구 {n + 1}/{len(todo)} 스윙 방향 측정 중 (포즈 인식)"})
+                cache[keys[todo[j]]] = res
+                if n % 10 == 9 or n == len(todo) - 1:
+                    fp.parent.mkdir(parents=True, exist_ok=True)
+                    fp.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        return {k: cache[key] for k, key in enumerate(keys) if cache.get(key)}
 
     @staticmethod
     def _seg(segs, h):

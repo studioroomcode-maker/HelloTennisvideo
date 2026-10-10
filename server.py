@@ -31,7 +31,7 @@ for d in (CACHE, PROJECTS, EXPORTS, CONFIG):
 STATE_LOCK = threading.RLock()
 PROJECT = new_project()
 CURRENT_PROJECT_PATH = PROJECTS / "current_project.json"
-APP_VERSION = "0.7.0-court-views"
+APP_VERSION = "0.8.1"
 PROGRESS_API_VERSION = 4
 
 
@@ -164,7 +164,8 @@ def _shot_worker(fid: str, options: dict):
         if options.get("prompt") == "hits":
             from analysis.hit_shots import HitShotJob
             result = HitShotJob(project=snapshot, file_entry=f, api_key=cfg["api_key"], model=cfg["model"],
-                                cache_dir=CACHE, report=report, cancelled=cancelled).run()
+                                cache_dir=CACHE, report=report, cancelled=cancelled,
+                                use_gemini=bool(options.get("gemini"))).run()
             _save_shot_result(fid, result)
             return
         variant = options.get("prompt") if options.get("prompt") in ("v1", "v2") else "v2"
@@ -623,6 +624,31 @@ def get_file(fid):
     return None
 
 
+def check_proxies(project: dict) -> list[str]:
+    """Drop playback copies the browser can't play (10-bit, made by older versions) and pick up
+    a finished copy in cache/ that the project doesn't know about. Returns the changed file ids."""
+    changed = []
+    for f in project.get("files", []):
+        cand = Path(f["proxy"]) if f.get("proxy") else CACHE / f"{f['id']}_proxy.mp4"
+        if not cand.exists():
+            if f.get("proxy"):
+                f["proxy"] = None
+                changed.append(f["id"])
+            continue
+        try:
+            info = probe(str(cand))
+        except Exception:
+            info = {}
+        dur = float((f.get("metadata") or {}).get("duration") or 0.0)
+        ok = info.get("pix_fmt") in ("yuv420p", "yuvj420p")
+        if ok and dur:
+            ok = abs(float(info.get("duration") or 0.0) - dur) < 2.0  # an unfinished copy has no length
+        if bool(f.get("proxy")) != ok:
+            f["proxy"] = str(cand) if ok else None
+            changed.append(f["id"])
+    return changed
+
+
 def auto_save():
     with STATE_LOCK:
         recompute(PROJECT)
@@ -902,10 +928,11 @@ class Handler(BaseHTTPRequestHandler):
                 f = get_file(fid)
                 if not f:
                     return self._json({"ok": False, "error": "file not found"}, 404)
-                if not _gemini_config()["api_key"]:
+                data = self._read_json()
+                needs_key = data.get("prompt") != "hits" or bool(data.get("gemini"))
+                if needs_key and not _gemini_config()["api_key"]:
                     return self._json({"ok": False, "code": "NO_API_KEY",
                                        "error": "Gemini API 키가 필요해. ‘API 키 설정’에서 입력해줘."}, 409)
-                data = self._read_json()
                 if data.get("scope") == "points" and not any(p.get("file_id") == fid for p in PROJECT.get("points", [])):
                     return self._json({"ok": False, "error": "이 영상에 라벨된 포인트가 없어. 범위를 ‘영상 전체’로 바꾸거나 포인트를 먼저 찍어줘."}, 400)
                 with SHOT_JOBS_LOCK:
@@ -1103,6 +1130,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not selected:
                     return self._json({"ok": True, "loaded": False})
                 loaded = load_project(selected)
+                check_proxies(loaded)
                 with STATE_LOCK:
                     PROJECT.clear(); PROJECT.update(loaded)
                     auto_save()
@@ -1184,6 +1212,10 @@ def main(host="127.0.0.1", port=8765, open_browser=True):
         try:
             loaded = load_project(CURRENT_PROJECT_PATH)
             PROJECT.clear(); PROJECT.update(loaded)
+            fixed = check_proxies(PROJECT)
+            if fixed:
+                print("Playback copies updated:", ", ".join(fixed))
+                auto_save()
         except Exception as e:
             print("Could not restore current project:", e)
     url = f"http://{host}:{port}"

@@ -81,6 +81,17 @@ class HitDetectTests(unittest.TestCase):
         hd.mark_bounces(volley, [self.track(arc((5, 22, 1.0), (5, 6.4, 1.2), 0.0, 0.75, 1.5))], self.court)
         self.assertFalse(volley[1]["bounced"])
 
+    def test_bounce_found_across_a_lost_stretch(self):
+        # near player hits at 0.0; the far bounce at 1.0 is lost (0.9-1.05), far player hits at 1.6
+        down = arc((5, 2, 1.0), (5, 20, 0.0), 0.0, 1.0, 1.6)
+        up = arc((5, 20, 0.0), (5, 23.5, 1.2), 1.0, 1.6, 0.9)
+        a = self.track([p for p in down if p[0] < 0.9])
+        b = self.track([p for p in up if p[0] >= 1.05])
+        self.assertIsNone(hd.bounce_before([a, b], self.court, 0.15, 1.6))
+        hits = [{"t": 0.0, "side": "near"}, {"t": 1.6, "side": "far"}]
+        hd.mark_bounces(hits, [a, b], self.court)
+        self.assertTrue(hits[1]["bounced"])
+
     def test_balls_on_the_next_court_are_not_ours(self):
         ours = self.track(arc((5, 22, 1.0), (5, 2, 1.0), 0.0, 1.0, 1.5))
         nxt = self.track(arc((5 + 14, 22, 1.0), (5 + 14, 2, 1.0), 0.0, 1.0, 1.5))  # next court to the right

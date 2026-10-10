@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Hello Tennis</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="/styles.css?v=0.7.0" />
+  <link rel="stylesheet" href="/styles.css?v=0.8.1" />
 </head>
 <body>
   <a class="skip" href="#panel">본문으로 건너뛰기</a>
@@ -146,7 +146,7 @@
             <div class="step-head"><span class="dot"></span><h3>AI 준비</h3><span class="step-state" id="stepAIState"></span></div>
             <dl class="kv">
               <dt>공 추적·자세 인식</dt><dd><span id="aiStatus" class="hint">확인 중…</span> <button id="btnInstallAI" class="btn sm hidden">설치</button></dd>
-              <dt>Gemini (타구 종류 판정)</dt><dd><span id="shotKeyStatus" class="hint">확인 중…</span> <button id="btnShotKey" class="btn sm ghost">키 설정</button></dd>
+              <dt>Gemini (선택)</dt><dd><span id="shotKeyStatus" class="hint">확인 중…</span> <button id="btnShotKey" class="btn sm ghost">키 설정</button></dd>
             </dl>
             <div id="shotKeyForm" class="keyform hidden">
               <label class="field">API 키 <input id="shotKeyInput" type="password" autocomplete="off" placeholder="비워 두고 저장하면 삭제" /></label>
@@ -212,6 +212,7 @@
               <select id="shotQuality"><option value="auto">자동</option><option value="original">원본 (느림)</option><option value="proxy">재생용 사본 (빠름)</option></select>
             </label>
           </div>
+          <label class="check"><input id="shotGemini" type="checkbox" /> Gemini로 한 번 더 확인 (느림 · 키 필요)</label>
           <label class="check"><input id="shotHighRes" type="checkbox" /> 고해상도로 판독 (Gemini 비용 증가)</label>
           <div class="step-actions">
             <button id="btnServeMeasure" class="btn sm ghost">공 추적만 다시</button>
@@ -264,6 +265,6 @@
     </section>
   </main>
 
-  <script src="/app.js?v=0.7.0"></script>
+  <script src="/app.js?v=0.8.1"></script>
 </body>
 </html>
