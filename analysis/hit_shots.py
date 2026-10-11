@@ -27,6 +27,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from analysis import gemini_client as gemini
+from analysis.point_winner import call_shot
+from analysis.rally_speed import shot_speed
 from analysis.serve_speed import COURT_L, COURT_W, NET_Y, Court
 from analysis.shot_analysis import (FALLBACK_MODEL, SHOTS, Cancelled, aggregate, build_segments, _attribute,
                                     _clamp, _enum)
@@ -199,6 +201,27 @@ def classify(api_key: str, model: str, src: str, court: Court, W: int, H: int, h
     return {"answers": answers, "usage": r.get("usage") or {}}
 
 
+def rally_results(events: list[dict], winners: dict | None = None):
+    """Each rally shot's result from where its ball landed: out or into the net is an error, in is
+    in, and in on the point's last shot is a winner (nobody got it back), unless the point went to
+    the other team (an earlier ball was out and played on). Too close to a line, taken in the air or
+    not seen: left unknown."""
+    winners = winners or {}
+    last = {}
+    for e in events:
+        last[e.get("point_id")] = e
+    for e in events:
+        call = (e.get("landing") or {}).get("call")
+        if e["shot"] == "serve" or call is None:
+            continue
+        if call in ("out", "net"):
+            e["result"] = "error"
+        elif call == "in":
+            won = winners.get(e.get("point_id"))
+            final = e.get("point_id") and last.get(e["point_id"]) is e and not (won and e.get("team") and e["team"] != won)
+            e["result"] = "winner" if final else "in"
+
+
 def hits_path(cache_dir: Path, fid: str) -> Path:
     return Path(cache_dir) / f"{fid}_hits.json"
 
@@ -241,6 +264,8 @@ class HitShotJob:
             h["_gap"] = h["t"] - prev["t"] if same else None
             if h.get("serve"):
                 served[h.get("point_id")] = h["t"]
+        for h, n in zip(everything, everything[1:] + [None]):
+            h["_next"] = n if n is not None and n.get("point_id") == h.get("point_id") else None
         hits = [h for h in everything if not h.get("serve")
                 and not (h.get("first") and any(abs(h["t"] - t) <= SERVE_MATCH_S for t in serve_ts))]
         if not hits:
@@ -251,6 +276,7 @@ class HitShotJob:
         court = Court(self.f["calibration"]["points"])
         src = self.f["path"]
         doubles = (settings.get("mode") or "doubles") == "doubles"
+        arcs = tracked.get("arcs") or {}
         segs = build_segments(self.f, self.project.get("points") or [], "points")
         hits = [dict(h, note=hand_note(settings, self._seg(segs, h), h["side"])) for h in hits]
         warnings: list[str] = []
@@ -352,12 +378,19 @@ class HitShotJob:
                     events = [e for e in events if e not in dead]
             if overhead_in_rally:
                 ev["fixes"].append("serve_mid_rally")
+            sp = shot_speed(h, sw, ev["shot"], court, W, H)  # serves here are ones the serve meter missed
+            if sp:
+                ev.update(speed_kmh=sp["speed_kmh"], speed_source="measured",
+                          speed_err_kmh=max(5, round(sp["speed_kmh"] * 0.08)), flight=sp)
+            if ev["shot"] != "serve":
+                ev["landing"] = call_shot(h, h.get("_next"), arcs.get(h.get("point_id")) or [], singles=not doubles)
             if a and a.get("found_hit") is False:
                 ev["fixes"].append("ai_saw_no_hit")
             if not a and ev["shot"] == "other":
                 unknown += 1
             _attribute(ev, seg, settings)
             events.append(ev)
+        rally_results(events, {p.get("id"): p.get("winner") for p in self.project.get("points") or []})
         if unknown:
             why = "AI 답도 공 궤적 단서도 없어" if self.use_gemini else "공 궤적·스윙으로 정하지 못해"
             warnings.append(f"{why} 종류를 모르는 타구 {unknown}개는 ‘기타’로 뒀어.")

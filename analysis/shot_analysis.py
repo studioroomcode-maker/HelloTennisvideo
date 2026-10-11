@@ -85,7 +85,7 @@ def build_segments(file_entry: dict, points: list[dict], scope: str) -> list[dic
                 "raw_end": raw_end,
                 "point_id": p.get("id"), "point_no": idx + 1,
                 "server_id": st.get("server_id"), "team_a_end": st.get("team_a_end"),
-                "winner": p.get("winner"),
+                "winner": None if p.get("winner_auto") else p.get("winner"),  # a guessed winner is no evidence for the AI
             })
         return [s for s in segs if s["end"] - s["start"] >= 0.5]
 
@@ -557,6 +557,22 @@ def _speed_stats(values):
     return {"avg": round(sum(vals) / len(vals)), "max": max(vals), "n": len(vals)}
 
 
+def _rally_block(events: list[dict]) -> dict:
+    """Line calls on rally shots (point_winner.call_shot): how many landed in, out, in the net,
+    too close to call, and the in-rate of those called."""
+    calls = {c: 0 for c in ("in", "out", "net", "close")}
+    shots = [e for e in events if e["shot"] != "serve"]
+    for e in shots:
+        c = (e.get("landing") or {}).get("call")
+        if c in calls:
+            calls[c] += 1
+    judged = calls["in"] + calls["out"] + calls["net"]
+    return {"shots": len(shots), "calls": calls, "unjudged": len(shots) - sum(calls.values()),
+            "in_rate": round(calls["in"] / judged * 100) if judged else None,
+            "winners": sum(1 for e in shots if e["result"] == "winner"),
+            "errors": sum(1 for e in shots if e["result"] == "error")}
+
+
 def aggregate(events: list[dict], settings: dict) -> dict:
     counts = {s: 0 for s in SHOTS}
     for e in events:
@@ -597,8 +613,11 @@ def aggregate(events: list[dict], settings: dict) -> dict:
         else:
             key = f"side_{e['side']}"
             label = {"near": "가까운 쪽", "far": "먼 쪽"}.get(e["side"], "미확인")
-        g = groups.setdefault(key, {"label": label, "counts": {s: 0 for s in SHOTS}})
+        g = groups.setdefault(key, {"label": label, "counts": {s: 0 for s in SHOTS}, "rally": _rally_block([])})
         g["counts"][e["shot"]] += 1
+        g.setdefault("_evs", []).append(e)
+    for g in groups.values():
+        g["rally"] = _rally_block(g.pop("_evs"))
 
     servers: dict[str, dict] = {}
     for e in serves:
@@ -632,6 +651,7 @@ def aggregate(events: list[dict], settings: dict) -> dict:
             "speed": _speed_stats(e["speed_kmh"] for e in serves),
             "aces": sum(1 for e in serves if e["result"] == "ace"),
         },
+        "rally": _rally_block(events),
         "winners": sum(1 for e in events if e["result"] in ("winner", "ace")),
         "errors": sum(1 for e in events if e["result"] == "error"),
         "groups": dict(sorted(groups.items())),

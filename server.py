@@ -31,7 +31,7 @@ for d in (CACHE, PROJECTS, EXPORTS, CONFIG):
 STATE_LOCK = threading.RLock()
 PROJECT = new_project()
 CURRENT_PROJECT_PATH = PROJECTS / "current_project.json"
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.8.4"
 PROGRESS_API_VERSION = 4
 
 
@@ -234,6 +234,24 @@ def _serve_worker(fid: str):
                                 report=lambda d: _update_serve_job(fid, status="running", **d),
                                 cancelled=cancelled)
         rally = measured.pop("rally_hits", None)
+        auto = measured.pop("auto_points", None)
+        seen = measured.pop("point_evidence", None) or {}
+        decided = 0
+        with STATE_LOCK:
+            if auto and not any(p.get("file_id") == fid for p in PROJECT.get("points", [])):
+                # the points found are the user's to check and edit, like typed-in ones
+                PROJECT.setdefault("points", []).extend(auto)
+                order = {f.get("id"): i for i, f in enumerate(PROJECT.get("files", []))}
+                PROJECT["points"].sort(key=lambda p: (order.get(p["file_id"], 999999), p["start"]))
+            for p in PROJECT.get("points", []):
+                if p.get("id") in seen:
+                    p["winner_evidence"] = seen[p["id"]]
+            if seen:
+                from analysis.point_winner import fill_winners
+                fill_winners(PROJECT)
+                decided = sum(1 for p in PROJECT["points"] if p.get("id") in seen and p.get("winner_auto"))
+            if auto or seen:
+                auto_save()
         _serves_path(fid).write_text(json.dumps(measured, ensure_ascii=False, indent=1), encoding="utf-8")
         if rally is not None:
             from analysis.hit_shots import hits_path
@@ -248,6 +266,10 @@ def _serve_worker(fid: str):
             msg += f" · 평균 {sm['avg']} · 최고 {sm['max']} km/h"
         if rally is not None:
             msg += f" · 랠리 타구 {rally['stats']['rally_hits']}개"
+        if decided:
+            msg = f"승자 {decided}개를 자동으로 정했어 · " + msg
+        if auto:
+            msg = f"포인트 {len(auto)}개를 자동으로 찾았어 (포인트 탭에서 확인) · " + msg
         _update_serve_job(fid, status="done", percent=100.0, message=msg)
     except Cancelled:
         _update_serve_job(fid, status="cancelled", message="서브 실측 취소됨")
@@ -1012,6 +1034,9 @@ class Handler(BaseHTTPRequestHandler):
                 data = self._read_json()
                 with STATE_LOCK:
                     PROJECT["settings"].update(data)
+                    if {"server_rotation", "team_a_start_end", "change_ends", "no_ad", "tiebreak_at_6_all"} & set(data):
+                        from analysis.point_winner import fill_winners
+                        fill_winners(PROJECT)  # who serves from which end is part of how winners were read
                     auto_save()
                 return self._json({"ok": True, "project": PROJECT})
 
@@ -1106,13 +1131,21 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "winner":
                     val = data.get("winner")
                     point["winner"] = val if val in ("A", "B", None) else None
+                    point["winner_auto"], point["winner_cleared"] = False, point["winner"] is None
                 elif action == "start":
                     point["start"] = round(float(data["time"]), 3)
                 elif action == "end":
                     point["end"] = round(float(data["time"]), 3)
-                elif action == "delete":
+                if action in ("start", "end") and point.get("status") == "auto":
+                    point["status"], point["review_reason"] = "manual", None  # checked by hand now
+                if action == "delete":
                     PROJECT["points"].remove(point)
                 PROJECT["points"].sort(key=lambda p: (self._file_order(p["file_id"]), p["start"]))
+                if action in ("winner", "delete"):
+                    # the winners the analysis chose are re-chosen around the user's so the score holds
+                    from analysis.point_winner import fill_winners
+                    with STATE_LOCK:
+                        fill_winners(PROJECT)
                 auto_save()
                 return self._json({"ok": True, "project": PROJECT})
 

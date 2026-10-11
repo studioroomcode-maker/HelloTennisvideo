@@ -22,3 +22,6 @@ __pycache__/
 .venv/
 *.log
 *.part
+
+# replica-skill recon of other apps (reference only, never shipped)
+replica/

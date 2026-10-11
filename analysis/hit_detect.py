@@ -14,6 +14,8 @@ strongest impact sound in the hole between the incoming and the outgoing stretch
 """
 from __future__ import annotations
 
+import math
+
 from analysis.serve_speed import COURT_L, COURT_W, IN_H, IN_W, NET_Y, Court, _slope
 
 NET_TOP_M = 1.0       # m; the tape height used for the crossing row
@@ -34,6 +36,8 @@ BOUNCE_PX = 3.0       # image px (640x360) the ball must come down to and go bac
 BOUNCE_GAP = 0.15     # s; a "bounce" closer than this to the contact is the racket itself
 GAP_JOIN_S = 0.8      # s of lost ball a bounce may be found across
 SEEN_GAP = 0.4        # s; "no bounce" needs the ball seen this close to the contact, else it is unknown
+LAND_MAX_S = 2.5      # s after a hit its ball must have landed by
+NEAR_PX, NEAR_PX_S = 30.0, 400.0  # px (+ px/s apart in time) for two ball points to be the same ball
 
 
 def _on_court(court: Court, x: float, y: float) -> bool:
@@ -322,6 +326,45 @@ def bounce_across_gap(tracks, court: Court, t0: float, t1: float):
     return best
 
 
+def bounce_after(tracks, court: Court, t0: float, t1: float, side: str):
+    """(t, (x, y) px) of the first bounce in [t0, t1] beyond the net from `side`, or None.
+
+    As bounce_before, over this court's ball points joined across tracks, but the points either
+    side of the low point must be the same ball: within NEAR_PX (+ NEAR_PX_S per second) of it.
+    Two balls seen at once (one in play, a white cap or a ball on the next court) otherwise
+    make a false peak where the track jumps from one to the other."""
+    pts = sorted(q for tr in tracks if own_court(tr, court) for q in tr if t0 - 0.3 <= q[0] <= t1 + 0.3)
+    for i, (t, x, y) in enumerate(pts):
+        if not t0 <= t <= t1:
+            continue
+        same = [q for q in pts[max(0, i - 40):i + 40] if q[0] != t and abs(q[0] - t) <= 0.3
+                and math.hypot(q[1] - x, q[2] - y) <= NEAR_PX + NEAR_PX_S * abs(q[0] - t)]
+        before = [q[2] for q in same if q[0] < t]
+        after = [q[2] for q in same if q[0] > t]
+        if not (before and after and y >= max(before + after) and y - min(before) >= BOUNCE_PX
+                and y - min(after) >= BOUNCE_PX):
+            continue
+        cx, cy = court.to_court(x / IN_W, y / IN_H)
+        if (cy > NET_Y) == (side == "near") and -3.0 < cx < COURT_W + 3.0 and -4.0 < cy < COURT_L + 4.0:
+            return t, (x, y)
+    return None
+
+
+def mark_landings(hits: list[dict], tracks, court: Court):
+    """Set "landed": {"t", "px", "court"} on rally hits whose ball was seen bouncing on the other
+    side before anyone hit it again (rally_speed reads the shot's speed from it)."""
+    for k, h in enumerate(hits):
+        if h.get("serve"):
+            continue
+        nxt = hits[k + 1] if k + 1 < len(hits) else None
+        c = contact_time(h)
+        t1 = min(contact_time(nxt) - BOUNCE_GAP, c + LAND_MAX_S) if nxt else c + LAND_MAX_S
+        b = bounce_after(tracks, court, c + BOUNCE_GAP, t1, h["side"])
+        if b is not None:
+            (t, (x, y)), (cx, cy) = b, court.to_court(b[1][0] / IN_W, b[1][1] / IN_H)
+            h["landed"] = {"t": round(t, 3), "px": [round(x, 1), round(y, 1)], "court": [round(cx, 2), round(cy, 2)]}
+
+
 def mark_bounces(hits: list[dict], tracks, court: Court):
     """Set "bounced" on every rally hit: did the ball bounce on the hitter's side first?"""
     for k, h in enumerate(hits):
@@ -370,6 +413,7 @@ def find_rally_hits(meter, src: str, start: float, end: float, serves=None, arcs
     except Exception:
         pass
     mark_bounces(hits, tracks, meter.court)
+    mark_landings(hits, tracks, meter.court)
     for h in hits:  # the ball around the hit, so the hitter can be told from the other players later
         pts = sorted(p for tr in own for p in tr if h["t"] - 0.6 <= p[0] <= h["t"] + 0.4)
         h["balls"] = [[round(p[0], 3), round(p[1], 1), round(p[2], 1)] for p in pts[::2]]

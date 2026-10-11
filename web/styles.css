@@ -247,6 +247,7 @@ input::placeholder { color: var(--text-3); }
 .win { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 99px; background: var(--surface-3); color: var(--text-3); }
 .win.a { color: var(--team-a); background: rgba(132, 195, 236, .12); }
 .win.b { color: var(--team-b); background: rgba(238, 164, 137, .12); }
+.win.auto { background: transparent; box-shadow: inset 0 0 0 1px currentColor; font-weight: 600; }
 .empty { padding: 28px 12px; text-align: center; color: var(--text-3); font-size: 13px; border: 1px dashed var(--line-2); border-radius: var(--r); }
 
 /* ── analysis ───────────────────────────────── */
@@ -318,3 +319,30 @@ table.t { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-
   .run { flex-direction: column; align-items: stretch; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* shot placement map: court seen from above, far end at the top */
+.pm-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
+.pm-filters select { width: auto; height: 28px; }
+.pm-wrap { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.pm { width: 100%; max-width: 340px; height: auto; display: block; }
+.pm-side { flex: 1 1 220px; min-width: 0; }
+.pm-court { fill: var(--surface-2); }
+.pm-lines line { stroke: var(--text-3); stroke-width: .07; }
+.pm-net { stroke: var(--text-2); stroke-width: .12; }
+.pdot { cursor: pointer; stroke: var(--bg); stroke-width: .06; fill-opacity: .9; }
+.pdot.in { fill: var(--ok); }
+.pdot.winner { fill: var(--accent); }
+.pdot.close { fill: var(--warn); }
+.pdot.out, .pdot.net { fill: var(--bad); }
+.pdot.serve { fill-opacity: .35; stroke-width: .1; }
+.pdot.serve.in { stroke: var(--ok); }
+.pdot.serve.out, .pdot.serve.net { stroke: var(--bad); }
+.pdot.serve.close { stroke: var(--warn); }
+.pdot:hover { stroke: var(--text); stroke-width: .1; }
+.pm-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 0 0 10px; color: var(--text-2); font-size: 13px; }
+.pdot-key { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: -6px; }
+.pdot-key.in { background: var(--ok); }
+.pdot-key.winner { background: var(--accent); }
+.pdot-key.close { background: var(--warn); }
+.pdot-key.out { background: var(--bad); }
+.pdot-key.ring { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-2); }

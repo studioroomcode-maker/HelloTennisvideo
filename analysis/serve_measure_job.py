@@ -28,8 +28,6 @@ def measure_file(project: dict, file_entry: dict, root: Path, shots: dict | None
     fid = file_entry["id"]
     points = sorted((p for p in project.get("points", []) if p.get("file_id") == fid), key=lambda p: p["start"])
     gem_serves = [e for e in (shots or {}).get("events", []) if e["shot"] == "serve" and e.get("file_id") == fid]
-    if not points and not gem_serves:
-        raise RuntimeError("측정할 서브를 찾을 기준이 없어. 포인트를 라벨링하거나 AI 샷 분석을 먼저 해줘.")
 
     weights = active_weights(root, report)
     report({"percent": 2.0, "message": "공 추적 모델 불러오는 중..."})
@@ -37,9 +35,35 @@ def measure_file(project: dict, file_entry: dict, root: Path, shots: dict | None
                        pick_source(file_entry, "original", 0)[0],
                        float((file_entry.get("metadata") or {}).get("fps") or 59.4))
 
-    # every point's ball once, up front (the serve, 2nd-serve and rally passes then read memory)
-    meter.prefetch([(p["start"] - 1.5, p["end"] + 1.3) for p in points], cancelled=cancelled,
-                   progress=lambda f: report({"percent": round(3 + 40 * f, 1), "message": f"공 추적 중 · {round(f * 100)}%"}))
+    auto = None
+    if not points:
+        # nothing labelled: track the whole video and find the points (analysis/auto_points.py)
+        from analysis.auto_points import scan, segment
+        from core.project import point_entry
+        duration = float((file_entry.get("metadata") or {}).get("duration") or 0.0)
+        if duration <= 0:
+            raise RuntimeError("영상 길이를 몰라서 포인트를 찾을 수 없어.")
+        meter.prefetch([(0.0, duration)], cancelled=cancelled,
+                       progress=lambda f: report({"percent": round(3 + 33 * f, 1),
+                                                  "message": f"포인트 찾기 · 영상 전체 공 추적 중 · {round(f * 100)}%"}))
+        meter._covered.append((duration - 0.05, duration + 60.0))  # nothing to decode past the end
+        cand_serves, cand_hits = scan(meter, duration, cancelled=cancelled,
+                                      progress=lambda f: report({"percent": round(36 + 7 * f, 1),
+                                                                 "message": "포인트 찾기 · 서브와 타구 읽는 중"}))
+        found = segment(cand_serves, cand_hits, duration)
+        if not found and not gem_serves:
+            raise RuntimeError("영상에서 포인트를 찾지 못했어. 코트 위치가 맞는지 확인하거나 포인트를 직접 기록해줘.")
+        points = []
+        for q in found:
+            p = point_entry(fid, q["start"], q["end"])
+            p["status"] = "auto"
+            p["review_reason"] = "자동으로 찾음" + ("" if q["serves"] else " · 서브를 못 봄")
+            points.append(p)
+        auto = points
+    else:
+        # every point's ball once, up front (the serve, 2nd-serve and rally passes then read memory)
+        meter.prefetch([(p["start"] - 1.5, p["end"] + 1.3) for p in points], cancelled=cancelled,
+                       progress=lambda f: report({"percent": round(3 + 40 * f, 1), "message": f"공 추적 중 · {round(f * 100)}%"}))
     jobs = [("point", p) for p in points]
     serves: list[dict] = []
     for k, (kind, p) in enumerate(jobs):
@@ -73,6 +97,7 @@ def measure_file(project: dict, file_entry: dict, root: Path, shots: dict | None
     for s in serves:
         s.pop("_flight", None)
     rally = find_point_hits(points, serves, meter, report, cancelled)
+    from analysis.point_winner import point_evidence
 
     return {
         "file_id": fid,
@@ -83,6 +108,9 @@ def measure_file(project: dict, file_entry: dict, root: Path, shots: dict | None
         "warnings": server_end_warnings(project, serves),
         "audio": audio,
         "rally_hits": rally,
+        "auto_points": auto,
+        "point_evidence": point_evidence(points, serves, rally,
+                                         singles=((project.get("settings") or {}).get("mode") == "singles")),
     }
 
 

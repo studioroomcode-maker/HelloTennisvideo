@@ -25,6 +25,7 @@ const statusProgressText = $('#statusProgressText');
 const SHOT_KO = {serve:'서브',forehand:'포핸드',backhand:'백핸드',volley:'발리',smash:'스매시',lob:'로브',dropshot:'드롭샷',other:'기타',stroke:'스트로크'};
 const SPIN_KO = {topspin:'탑스핀',slice:'슬라이스',flat:'플랫',kick:'킥',unknown:'모름'};
 const DIR_KO = {T:'T',body:'바디',wide:'와이드',unknown:'-'};
+const WIN_HOW_KO = {out:'마지막 공이 아웃',net:'마지막 공이 네트',winner:'상대가 못 받은 공',double_fault:'더블폴트',fault:'폴트 뒤 끝남',ace:'리턴 없는 서브',error_unseen:'마지막 공을 못 따라가서 친 쪽 실수로 봄',unknown:'점수 흐름'};
 const RESULT_KO = {in:'인',fault:'폴트',ace:'에이스',winner:'위너',error:'에러',unknown:'-'};
 const CALL_KO = {in:'인',out:'아웃',net:'네트',close:'라인 근처'};
 const FIX_KO = {serve_to_smash:'랠리 중 서브를 스매시로',before_serve:'서브 전 타구 제외',fault_return:'폴트 공 넘겨주기 제외',duplicate:'중복 타구 제거',side_flip:'친 쪽 수정',side_fill:'친 쪽 보완',return_volley:'리턴 발리/스매시를 기타로',result_mid_rally:'랠리 중간 위너·에러를 인으로',serve_result:'리턴된 서브를 인으로',result_vs_label:'승자 기록과 충돌해 결과 미확인',tracked_hit:'공 추적으로 찾은 타구',swing_side:'스윙 방향으로 포/백 결정',ball_no_bounce:'바운스 없음 → 발리',ball_bounced:'바운스 있음 → 스트로크',serve_mid_rally:'랠리 중 서브를 스매시로',second_serve_after_fault:'폴트 뒤 세컨드 서브',tracked_hit_type:'공·소리로 종류 결정',ai_saw_no_hit:'AI는 타구를 못 봄',added_by_tracking:'공 추적으로 추가'};
@@ -188,14 +189,15 @@ function renderPoints(){
   const wrap=$('#points'); const pts=filePoints();
   const all=project.points||[];
   if(!pts.length){
-    wrap.innerHTML=`<div class="empty">아직 기록한 포인트가 없어요.<br>영상을 보면서 서브 직전에 <kbd>S</kbd>, 포인트가 끝나면 <kbd>E</kbd>를 누르세요.</div>`;
+    wrap.innerHTML=`<div class="empty">아직 기록한 포인트가 없어요.<br>영상을 보면서 서브 직전에 <kbd>S</kbd>, 포인트가 끝나면 <kbd>E</kbd>를 누르세요.<br>분석 탭의 “분석하기”를 누르면 포인트를 자동으로 찾아 줘요.</div>`;
   }else{
     wrap.innerHTML=pts.map(p=>{
       const i=all.indexOf(p); const sc=p.score_before||{};
-      const win=p.winner?`<span class="win ${p.winner.toLowerCase()}">${p.winner} 승</span>`:'<span class="win">미정</span>';
+      const why=p.winner_auto?`자동으로 정한 승자 · ${WIN_HOW_KO[p.winner_evidence?.how]||'점수 흐름'}. 틀리면 직접 누르세요. 나머지 자동 승자는 점수에 맞게 다시 골라요.`:'';
+      const win=p.winner?`<span class="win ${p.winner.toLowerCase()}${p.winner_auto?' auto':''}"${why?` title="${esc(why)}"`:''}>${p.winner} 승${p.winner_auto?' · 자동':''}</span>`:'<span class="win">미정</span>';
       return `<div class="pt-row${p.id===selectedPointId?' sel':''}" role="option" tabindex="0" aria-selected="${p.id===selectedPointId}" data-id="${p.id}">
         <span class="pt-no">#${i+1}</span>
-        <span class="pt-time">${fmtShort(p.start)}<small>${(p.end-p.start).toFixed(1)}초</small></span>
+        <span class="pt-time">${fmtShort(p.start)}<small>${(p.end-p.start).toFixed(1)}초${p.status==='auto'?` · <span title="${esc(p.review_reason||'자동으로 찾음')}">자동</span>`:''}</small></span>
         <span class="pt-score">${sc.set_games_a??0}-${sc.set_games_b??0} · ${sc.point_a||'0'}:${sc.point_b||'0'}</span>${win}</div>`;
     }).join('');
     wrap.querySelectorAll('.pt-row').forEach(row=>{
@@ -205,8 +207,8 @@ function renderPoints(){
       row.addEventListener('keydown',e=>{ if(e.key==='Enter') openPoint(p); });
     });
   }
-  const wins=pts.filter(p=>p.winner).length;
-  $('#pointSummary').textContent=pts.length?`${pts.length}개 · 승자 기록 ${wins}개`:'';
+  const wins=pts.filter(p=>p.winner).length, autoWins=pts.filter(p=>p.winner_auto).length;
+  $('#pointSummary').textContent=pts.length?`${pts.length}개 · 승자 기록 ${wins}개${autoWins?` (자동 ${autoWins})`:''}`:'';
   const sel=pointById(selectedPointId);
   $('#selectedBox').classList.toggle('has',!!sel);
   $$('#selectedBox .selected-actions button').forEach(b=>b.disabled=!sel);
@@ -487,7 +489,68 @@ function who(e){
 }
 function fixMark(e){ const f=(e.fixes||[]).filter(x=>x!=='tracked_hit'); return f.length?`<span class="mark" title="${esc(f.map(x=>FIX_KO[x]||x).join(', '))}">보정</span>`:''; }
 function stat(k,v,s){ return `<div class="stat"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${s||'&nbsp;'}</span></div>`; }
-function speedText(sp){ return sp&&sp.n?`평균 ${sp.avg} · 최고 ${sp.max} km/h`:''; }
+function speedText(sp){ return sp&&sp.n?`평균 ${sp.avg} · 최고 ${sp.max} km/h · ${sp.n}개 기준`:''; }
+
+/* ── shot placement map ─────────────────────────── */
+const PLACE={kind:'all',who:'all',fold:true};
+const CW=10.97, CL=23.77, NETY=CL/2, SVC=6.40, SGL=[1.37,9.60], MARGIN=3, DEEP_M=2.74;
+const PLACE_KO={short:'짧음',mid:'중간',deep:'깊음'};
+function whoKey(e){ return e.player||(e.team?`T${e.team}`:e.side||'?'); }
+function placeDots(res){
+  const out=[];
+  for(const e of res.events||[]){
+    let x,y,call,kind;
+    if(e.shot==='serve'){ if(!e.bounce_court) continue; [x,y]=e.bounce_court; call=e.serve_call||'in'; kind='serve'; }
+    else{ const l=e.landing; if(!l||l.x==null||!l.call) continue; x=l.x; y=l.y; call=e.result==='winner'?'winner':l.call; kind='rally'; }
+    out.push({e,x,y,call,kind});
+  }
+  return out;
+}
+function placementSection(res){
+  const all=placeDots(res);
+  if(!all.length) return '';
+  const whos=[...new Map(all.map(d=>[whoKey(d.e),who(d.e)])).entries()];
+  if(PLACE.who!=='all'&&!whos.some(([k])=>k===PLACE.who)) PLACE.who='all';
+  const dots=all.filter(d=>(PLACE.kind==='all'||d.kind===PLACE.kind)&&(PLACE.who==='all'||whoKey(d.e)===PLACE.who));
+  const shown=dots.filter(d=>d.call!=='net').map(d=>{
+    // folded: every ball as seen from its hitter, landing in the court across the net (the top half)
+    const flip=PLACE.fold&&d.y<NETY;
+    return {...d,x:flip?CW-d.x:d.x,y:flip?CL-d.y:d.y};
+  });
+  const X=x=>(x+MARGIN).toFixed(2), Y=y=>(CL+MARGIN-y).toFixed(2);
+  const top=-0.2, bottom=PLACE.fold?CL+MARGIN-NETY+1.2:CL+2*MARGIN;
+  const line=(x1,y1,x2,y2)=>`<line x1="${X(x1)}" y1="${Y(y1)}" x2="${X(x2)}" y2="${Y(y2)}"/>`;
+  const court=`<rect class="pm-court" x="${X(0)}" y="${Y(CL)}" width="${CW}" height="${CL}"/><g class="pm-lines">`
+    +line(0,0,CW,0)+line(0,CL,CW,CL)+line(0,0,0,CL)+line(CW,0,CW,CL)+line(SGL[0],0,SGL[0],CL)+line(SGL[1],0,SGL[1],CL)
+    +line(SGL[0],NETY-SVC,SGL[1],NETY-SVC)+line(SGL[0],NETY+SVC,SGL[1],NETY+SVC)+line(CW/2,NETY-SVC,CW/2,NETY+SVC)
+    +line(CW/2,0,CW/2,0.15)+line(CW/2,CL,CW/2,CL-0.15)+`</g><line class="pm-net" x1="${X(-0.5)}" y1="${Y(NETY)}" x2="${X(CW+0.5)}" y2="${Y(NETY)}"/>`;
+  const dot=d=>`<circle class="pdot ${d.call} ${d.kind}" cx="${X(d.x)}" cy="${Y(d.y)}" r="${d.kind==='serve'?0.32:0.28}" data-t="${d.e.t}" data-f="${d.e.file_id}"><title>${fmtShort(d.e.t)} ${who(d.e)} ${SHOT_KO[d.e.shot]||''} · ${d.call==='winner'?'위너':CALL_KO[d.call]||d.call} (${d.x.toFixed(1)}, ${d.y.toFixed(1)})m</title></circle>`;
+  const svg=`<svg class="pm" viewBox="0 ${top} ${CW+2*MARGIN} ${bottom-top}" role="img" aria-label="샷이 떨어진 위치">${court}${shown.map(dot).join('')}</svg>`;
+  // depth of rally balls that landed in, measured from the baseline they head for
+  const depth={short:0,mid:0,deep:0};
+  for(const d of dots) if(d.kind==='rally'&&['in','winner','close'].includes(d.call)){
+    const back=d.y>NETY?CL-d.y:d.y;
+    depth[back<DEEP_M?'deep':back<NETY-SVC?'mid':'short']++;
+  }
+  const nd=depth.short+depth.mid+depth.deep;
+  const calls=k=>dots.filter(d=>d.call===k).length;
+  const chip=(k,v,label)=>`<button class="chip${PLACE[k]===v?' on':''}" data-place="${k}" data-v="${v}">${label}</button>`;
+  return `<section class="block"><div class="block-head"><h3>샷 위치</h3><span class="hint">점을 누르면 그 장면으로</span></div>`
+    +`<div class="pm-filters">${chip('kind','all','전체')}${chip('kind','serve','서브')}${chip('kind','rally','랠리')}`
+    +`<select id="placeWho" aria-label="선수"><option value="all">모든 선수</option>${whos.map(([k,l])=>`<option value="${esc(k)}"${PLACE.who===k?' selected':''}>${l}</option>`).join('')}</select>`
+    +`<label class="check"><input type="checkbox" id="placeFold"${PLACE.fold?' checked':''}> 친 사람 기준으로 모으기</label></div>`
+    +`<div class="pm-wrap">${svg}<div class="pm-side">`
+    +`<p class="pm-legend"><span class="pdot-key in"></span>인 ${calls('in')} <span class="pdot-key winner"></span>위너 ${calls('winner')} <span class="pdot-key close"></span>라인 근처 ${calls('close')} <span class="pdot-key out"></span>아웃 ${calls('out')}${calls('net')?` · 네트 ${calls('net')} (지도에 없음)`:''} <span class="pdot-key ring"></span>테두리 = 서브</p>`
+    +(nd?`<table class="t"><tr><th>랠리 샷 깊이</th><th class="num">개수</th><th class="num">비율</th></tr>${['deep','mid','short'].map(k=>`<tr><td>${PLACE_KO[k]}</td><td class="num">${depth[k]}</td><td class="num">${Math.round(depth[k]/nd*100)}%</td></tr>`).join('')}</table>`
+        +`<p class="footnote">깊음 = 베이스라인 ${DEEP_M}m 안, 짧음 = 서비스라인 안. 인으로 떨어진 랠리 샷만 세요.</p>`:'')
+    +`<p class="footnote">서브는 바운스 실측, 랠리 샷은 공이 바닥에 닿은 곳이에요. 궤적을 못 본 샷은 빠져요.</p></div></div></section>`;
+}
+function bindPlacement(box){
+  box.querySelectorAll('[data-place]').forEach(b=>b.addEventListener('click',()=>{ PLACE[b.dataset.place]=b.dataset.v; renderShotResult(lastShotResult); }));
+  box.querySelector('#placeWho')?.addEventListener('change',ev=>{ PLACE.who=ev.target.value; renderShotResult(lastShotResult); });
+  box.querySelector('#placeFold')?.addEventListener('change',ev=>{ PLACE.fold=ev.target.checked; renderShotResult(lastShotResult); });
+  box.querySelectorAll('circle.pdot').forEach(c=>c.addEventListener('click',()=>seekTo(c.dataset.f,Number(c.dataset.t)-1.0)));
+}
 
 async function loadShotResult(fid){
   if(!fid){ $('#shotResult').innerHTML=''; return; }
@@ -499,6 +562,12 @@ async function loadShotResult(fid){
     const st=await api(`/api/shot_status/${fid}`); if(['queued','running'].includes(st.job?.status)) waitForShotJob(fid).catch(e=>setStatus(e.message,true));
     const dj=await api(`/api/export_dashboard_status/${fid}`); if(['queued','running'].includes(dj.job?.status)) waitForDashJob(fid).catch(e=>setStatus(e.message,true));
   }catch(e){ $('#shotResult').innerHTML=`<p class="hint bad">결과를 불러오지 못했어요: ${esc(e.message)}</p>`; }
+}
+function resultText(e){
+  const l=e.landing;
+  if(e.shot==='serve'||!l?.call) return RESULT_KO[e.result]||'-';
+  const label=e.result==='winner'?'위너':CALL_KO[l.call]||l.call;
+  return `<span class="tag ${e.result==='winner'?'winner':l.call}" title="바운스 (${l.x.toFixed(1)}, ${l.y.toFixed(1)})m">${label}</span>`;
 }
 function renderShotResult(res){
   lastShotResult=res||null; updateDashButton(); renderTrack();
@@ -518,6 +587,7 @@ function renderShotResult(res){
     +stat('발리',c.volley,speedText(sm.volley.speed))
     +stat('스매시 · 로브',`${c.smash} · ${c.lob}`,c.dropshot?`드롭샷 ${c.dropshot}`:'')
     +stat('서브 속도',ms?.count?`${ms.avg}`:'-',ms?.count?`km/h 평균 · 최고 ${ms.max}`:'공 추적 필요')
+    +(sm.rally?stat('랠리 샷 인',sm.rally.in_rate==null?'-':`${sm.rally.in_rate}%`,`아웃 ${sm.rally.calls.out} · 네트 ${sm.rally.calls.net} · 판정 ${sm.rally.shots-sm.rally.unjudged}/${sm.rally.shots}`):'')
     +`</div>`;
 
   const types=['flat','slice','kick','unknown'];
@@ -529,18 +599,21 @@ function renderShotResult(res){
     +[['1st',first],['2nd',second]].map(([k,b])=>`<tr><td>${k}</td><td class="num">${b.count}</td><td class="num">${b.in_rate==null?'-':b.in_rate+'%'}</td><td class="num">${kmh(b.speed.avg)}</td></tr>`).join('')
     +`</table></div><p class="footnote">방향 ${['T','body','wide'].map(d=>`${DIR_KO[d]} ${sv.directions[d]}`).join(' · ')}</p></section></div>`;
 
+  h+=placementSection(res);
   const groups=Object.values(sm.groups||{}), servers=Object.values(sm.servers||{});
   if(groups.length){
     const cols=['serve','forehand','backhand','volley','smash','lob'];
-    h+=`<section class="block"><div class="block-head"><h3>선수·위치별</h3></div><div class="table-wrap"><table class="t"><tr><th></th>${cols.map(k=>`<th class="num">${SHOT_KO[k]}</th>`).join('')}</tr>`
-      +groups.map(g=>`<tr><td>${esc(g.label)}</td>${cols.map(k=>`<td class="num">${g.counts[k]||0}</td>`).join('')}</tr>`).join('')+`</table></div></section>`;
+    const rc=g=>g.rally?`<td class="num">${g.rally.in_rate==null?'-':g.rally.in_rate+'%'}</td><td class="num">${g.rally.winners}</td><td class="num">${g.rally.errors}</td>`:'<td></td><td></td><td></td>';
+    h+=`<section class="block"><div class="block-head"><h3>선수·위치별</h3></div><div class="table-wrap"><table class="t"><tr><th></th>${cols.map(k=>`<th class="num">${SHOT_KO[k]}</th>`).join('')}<th class="num" title="랠리 샷 중 인/아웃을 판정한 것의 인 비율">인</th><th class="num" title="안에 떨어졌는데 상대가 못 받은 샷">위너</th><th class="num" title="아웃·네트">에러</th></tr>`
+      +groups.map(g=>`<tr><td>${esc(g.label)}</td>${cols.map(k=>`<td class="num">${g.counts[k]||0}</td>`).join('')}${rc(g)}</tr>`).join('')+`</table></div>`
+      +(sm.rally?`<p class="footnote">랠리 샷 인/아웃은 공의 3D 궤적을 바닥까지 이어서 판정해요. 라인에서 25cm 안은 “라인 근처”로 미루고, 공중에서 받은 샷과 궤적을 못 본 샷(${sm.rally.unjudged}개)은 판정하지 않아요.</p>`:'')+`</section>`;
   }
   if(servers.length){
     h+=`<section class="block"><div class="block-head"><h3>서버별</h3></div><div class="table-wrap"><table class="t"><tr><th>서버</th><th class="num">서브</th><th class="num">1st/2nd</th><th>구질</th><th class="num">평균/최고</th></tr>`
       +servers.map(s=>`<tr><td>${esc(s.label)}</td><td class="num">${s.count}</td><td class="num">${s.first}/${s.second}</td><td>${['flat','slice','kick'].filter(t=>s.types[t]).map(t=>`${SPIN_KO[t]} ${s.types[t]}`).join(' · ')||'-'}</td><td class="num">${s.speed.n?`${s.speed.avg}/${s.speed.max}`:'-'}</td></tr>`).join('')+`</table></div></section>`;
   }
   h+=`<section class="block"><div class="block-head"><h3>타구 ${res.events.length}개</h3><span class="hint">줄을 누르면 그 장면으로</span></div><div class="table-wrap"><table class="t"><tr><th>시각</th><th>포인트</th><th>타구</th><th>누가</th><th>결과</th><th class="num">속도</th></tr>`
-    +res.events.map(e=>`<tr class="seek" data-t="${e.t}" data-f="${e.file_id}"><td>${fmtShort(e.t)}</td><td>${e.point_no?'#'+e.point_no:'-'}</td><td>${SHOT_KO[e.shot]}${e.shot==='serve'&&e.serve_type&&e.serve_type!=='unknown'?` <span class="sub">${SPIN_KO[e.serve_type]}</span>`:''}${fixMark(e)}</td><td>${who(e)}</td><td>${RESULT_KO[e.result]||'-'}</td><td class="num">${kmh(e.speed_kmh)}</td></tr>`).join('')
+    +res.events.map(e=>`<tr class="seek" data-t="${e.t}" data-f="${e.file_id}"><td>${fmtShort(e.t)}</td><td>${e.point_no?'#'+e.point_no:'-'}</td><td>${SHOT_KO[e.shot]}${e.shot==='serve'&&e.serve_type&&e.serve_type!=='unknown'?` <span class="sub">${SPIN_KO[e.serve_type]}</span>`:''}${fixMark(e)}</td><td>${who(e)}</td><td>${resultText(e)}</td><td class="num"${e.flight?` title="친 곳에서 바운스까지 ${e.flight.distance_m}m를 ${e.flight.flight_s}초에 날아간 것으로 잰 속도 (±${e.speed_err_kmh})"`:''}>${kmh(e.speed_kmh)}${e.flight?'<span class="mark">실측</span>':''}</td></tr>`).join('')
     +`</table></div></section>`;
 
   const warn=[...(res.measure_warnings||[]),...(res.warnings||[])];
@@ -548,6 +621,7 @@ function renderShotResult(res){
   if(res.observations?.length) h+=`<details class="notes"><summary>코칭 메모 ${res.observations.length}개</summary><ul>${res.observations.map(o=>`<li>${esc(o)}</li>`).join('')}</ul></details>`;
   box.innerHTML=h;
   box.querySelectorAll('tr.seek').forEach(tr=>tr.addEventListener('click',()=>seekTo(tr.dataset.f,Number(tr.dataset.t)-1.0)));
+  bindPlacement(box);
 }
 function renderServeResult(res){
   lastServeResult=res||null; updateDashButton(); renderTrack();
@@ -592,7 +666,7 @@ function waitForServeJob(fid){
     try{
       while(true){
         const job=(await api(`/api/serve_measure_status/${fid}`)).job||{};
-        if(job.status==='done'){ setBusyProgress(false); setStatus(job.message||'공 추적 완료'); await loadServeResult(fid); shotLoadedFor=null; await loadShotResult(fid); return 'done'; }
+        if(job.status==='done'){ setBusyProgress(false); await refresh(); setStatus(job.message||'공 추적 완료'); await loadServeResult(fid); shotLoadedFor=null; await loadShotResult(fid); return 'done'; }
         if(job.status==='error'){ setBusyProgress(false); throw new Error(job.error||job.message); }
         if(job.status==='cancelled'||job.status==='idle'){ setBusyProgress(false); setStatus(job.message||'멈췄어요.'); return job.status; }
         jobProgress(job,'공 추적 중');
@@ -632,6 +706,7 @@ async function startShotAnalysis(fid){
 $('#btnAnalyzeAll').onclick=async()=>{
   const fid=currentFileId; if(!fid) return setStatus('먼저 영상을 추가하세요.',true);
   if((fileById(fid)?.calibration?.points?.length||0)<4){ showTab('setup'); return setStatus('코트 위치를 먼저 찍어 주세요 (준비 탭).',true); }
+  if(!(project.points||[]).some(p=>p.file_id===fid)) setStatus('기록한 포인트가 없어서 영상 전체에서 포인트를 자동으로 찾아요. 영상 길이만큼 걸려요.');
   try{
     const r=await startServeMeasure(fid);
     if(r!=='done') return;
